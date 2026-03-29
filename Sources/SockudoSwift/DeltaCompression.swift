@@ -80,20 +80,22 @@ private final class ChannelState {
 final class DeltaCompressionManager {
     private let options: DeltaOptions
     private let sendEvent: (String, Any) -> Bool
+    private let prefix: ProtocolPrefix
     private var enabled = false
     private var channelStates: [String: ChannelState] = [:]
     private var defaultAlgorithm: DeltaAlgorithm = .fossil
     private var totals = (messages: 0, delta: 0, full: 0, rawBytes: 0, wireBytes: 0, errors: 0)
 
-    init(options: DeltaOptions, sendEvent: @escaping (String, Any) -> Bool) {
+    init(options: DeltaOptions, prefix: ProtocolPrefix = ProtocolPrefix(version: 2), sendEvent: @escaping (String, Any) -> Bool) {
         self.options = options
+        self.prefix = prefix
         self.sendEvent = sendEvent
     }
 
     func enable() {
         guard enabled == false else { return }
         let payload: [String: Any] = ["algorithms": options.algorithms.map(\.rawValue)]
-        _ = sendEvent("pusher:enable_delta_compression", payload)
+        _ = sendEvent(prefix.event("enable_delta_compression"), payload)
     }
 
     func disable() {
@@ -120,7 +122,7 @@ final class DeltaCompressionManager {
         channelStates[channel] = state
     }
 
-    func handleDeltaMessage(channel: String, data: Any?) -> PusherEvent? {
+    func handleDeltaMessage(channel: String, data: Any?) -> SockudoEvent? {
         guard
             let payload = data as? [String: Any],
             let event = payload["event"] as? String,
@@ -187,14 +189,17 @@ final class DeltaCompressionManager {
                 eventData = parsed
             }
 
-            return PusherEvent(
+            return SockudoEvent(
                 event: event,
                 channel: channel,
                 data: eventData,
                 userID: nil,
+                messageId: nil,
                 rawMessage: reconstructed,
                 sequence: sequence,
-                conflationKey: conflationKey
+                conflationKey: conflationKey,
+                serial: nil,
+                extras: nil
             )
         } catch {
             recordError(error)
@@ -250,7 +255,7 @@ final class DeltaCompressionManager {
     }
 
     private func requestResync(channel: String) {
-        _ = sendEvent("pusher:delta_sync_error", ["channel": channel])
+        _ = sendEvent(prefix.event("delta_sync_error"), ["channel": channel])
         channelStates[channel] = nil
     }
 

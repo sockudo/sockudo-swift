@@ -60,7 +60,7 @@ public struct ChannelAuthorizationOptions {
     public var customHandler: ChannelAuthorizationHandler?
 
     public init(
-        endpoint: String = "/pusher/auth",
+        endpoint: String = "/sockudo/auth",
         headers: [String: String] = [:],
         params: [String: AuthValue] = [:],
         headersProvider: (@Sendable () -> [String: String])? = nil,
@@ -85,7 +85,7 @@ public struct UserAuthenticationOptions {
     public var customHandler: UserAuthenticationHandler?
 
     public init(
-        endpoint: String = "/pusher/user-auth",
+        endpoint: String = "/sockudo/user-auth",
         headers: [String: String] = [:],
         params: [String: AuthValue] = [:],
         headersProvider: (@Sendable () -> [String: String])? = nil,

@@ -96,7 +96,7 @@ public class Channel: @unchecked Sendable {
             case .failure(let error):
                 self.subscriptionPending = false
                 self.dispatcher.emit(
-                    "pusher:subscription_error",
+                    self.client.p.event("subscription_error"),
                     data: [
                         "type": "AuthError",
                         "error": error.localizedDescription,
@@ -119,11 +119,11 @@ public class Channel: @unchecked Sendable {
                 }
                 do {
                     _ = try self.client.sendEvent(
-                        name: "pusher:subscribe", data: payload, channel: nil)
+                        name: self.client.p.event("subscribe"), data: payload, channel: nil)
                 } catch {
                     self.subscriptionPending = false
                     self.dispatcher.emit(
-                        "pusher:subscription_error",
+                        self.client.p.event("subscription_error"),
                         data: [
                             "type": "ConnectionError",
                             "error": error.localizedDescription,
@@ -135,7 +135,7 @@ public class Channel: @unchecked Sendable {
 
     func unsubscribe() {
         isSubscribed = false
-        _ = try? client.sendEvent(name: "pusher:unsubscribe", data: ["channel": name], channel: nil)
+        _ = try? client.sendEvent(name: client.p.event("unsubscribe"), data: ["channel": name], channel: nil)
     }
 
     func disconnect() {
@@ -143,25 +143,24 @@ public class Channel: @unchecked Sendable {
         subscriptionPending = false
     }
 
-    func handle(event: PusherEvent) {
-        switch event.event {
-        case "pusher_internal:subscription_succeeded":
+    func handle(event: SockudoEvent) {
+        let p = client.p
+        if event.event == p.internal("subscription_succeeded") {
             subscriptionPending = false
             isSubscribed = true
             if subscriptionCancelled {
                 client.unsubscribe(name)
             } else {
-                dispatcher.emit("pusher:subscription_succeeded", data: event.data)
+                dispatcher.emit(p.event("subscription_succeeded"), data: event.data)
             }
-        case "pusher_internal:subscription_count":
+        } else if event.event == p.internal("subscription_count") {
             if let data = event.data as? [String: Any],
                 let count = data["subscription_count"] as? Int
             {
                 subscriptionCount = count
             }
-            dispatcher.emit("pusher:subscription_count", data: event.data)
-        default:
-            guard event.event.hasPrefix("pusher_internal:") == false else { return }
+            dispatcher.emit(p.event("subscription_count"), data: event.data)
+        } else if p.isInternalEvent(event.event) == false {
             dispatcher.emit(
                 event.event, data: event.data, metadata: EventMetadata(userID: event.userID))
         }
@@ -277,32 +276,30 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
         }
     }
 
-    override func handle(event: PusherEvent) {
-        switch event.event {
-        case "pusher_internal:subscription_succeeded":
+    override func handle(event: SockudoEvent) {
+        let p = client.p
+        if event.event == p.internal("subscription_succeeded") {
             subscriptionPending = false
             isSubscribed = true
             if subscriptionCancelled {
                 client.unsubscribe(name)
             } else if let data = event.data as? [String: Any] {
                 members.applySubscriptionData(data)
-                dispatcher.emit("pusher:subscription_succeeded", data: members)
+                dispatcher.emit(p.event("subscription_succeeded"), data: members)
             }
-        case "pusher_internal:subscription_count":
+        } else if event.event == p.internal("subscription_count") {
             super.handle(event: event)
-        case "pusher_internal:member_added":
+        } else if event.event == p.internal("member_added") {
             if let data = event.data as? [String: Any], let member = members.add(data) {
-                dispatcher.emit("pusher:member_added", data: member)
+                dispatcher.emit(p.event("member_added"), data: member)
             }
-        case "pusher_internal:member_removed":
+        } else if event.event == p.internal("member_removed") {
             if let data = event.data as? [String: Any], let member = members.remove(data) {
-                dispatcher.emit("pusher:member_removed", data: member)
+                dispatcher.emit(p.event("member_removed"), data: member)
             }
-        default:
-            if event.event.hasPrefix("pusher_internal:") == false {
-                dispatcher.emit(
-                    event.event, data: event.data, metadata: EventMetadata(userID: event.userID))
-            }
+        } else if p.isInternalEvent(event.event) == false {
+            dispatcher.emit(
+                event.event, data: event.data, metadata: EventMetadata(userID: event.userID))
         }
     }
 
@@ -351,8 +348,9 @@ public final class EncryptedChannel: PrivateChannel, @unchecked Sendable {
             "Client events are not currently supported for encrypted channels")
     }
 
-    override func handle(event: PusherEvent) {
-        if event.event.hasPrefix("pusher_internal:") || event.event.hasPrefix("pusher:") {
+    override func handle(event: SockudoEvent) {
+        let p = client.p
+        if p.isInternalEvent(event.event) || p.isPlatformEvent(event.event) {
             super.handle(event: event)
             return
         }
