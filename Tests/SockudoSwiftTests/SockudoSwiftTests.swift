@@ -35,6 +35,17 @@ private func md5Hex(_ data: Data) -> String {
     Insecure.MD5.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
+private func liveWireFormat() -> SockudoWireFormat {
+    switch ProcessInfo.processInfo.environment["SOCKUDO_WIRE_FORMAT"]?.lowercased() {
+    case "messagepack", "msgpack":
+        return .messagepack
+    case "protobuf", "proto":
+        return .protobuf
+    default:
+        return .json
+    }
+}
+
 private func publishToLocalSockudo(
     channel: String,
     eventName: String,
@@ -108,6 +119,101 @@ func deltaSettingsSerializeAsExpected() {
 }
 
 @Test
+func websocketURLIncludesV2FormatQuery() throws {
+    let client = try SockudoClient(
+        "app-key",
+        options: .init(
+            cluster: "local",
+            forceTLS: false,
+            enabledTransports: [.ws],
+            wsHost: "ws.example.com",
+            wsPort: 6001,
+            wssPort: 6002,
+            wireFormat: .messagepack
+        )
+    )
+
+    let url = try client.socketURL(for: .ws)
+    let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+    let query = Dictionary(uniqueKeysWithValues: (components?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+    #expect(query["protocol"] == "2")
+    #expect(query["format"] == "messagepack")
+}
+
+@Test
+func messagePackRoundTrip() throws {
+    let payload = try ProtocolCodec.encodeEnvelope(
+        [
+            "event": "sockudo:test",
+            "channel": "chat:room-1",
+            "data": [
+                "hello": "world",
+                "count": 3,
+            ],
+            "__delta_seq": 7,
+            "__conflation_key": "room",
+        ],
+        format: .messagepack
+    )
+    let message: URLSessionWebSocketTask.Message =
+        switch payload {
+        case .string(let text): .string(text)
+        case .data(let data): .data(data)
+        }
+
+    let decoded = try ProtocolCodec.decodeEvent(message, format: .messagepack)
+
+    #expect(decoded.event == "sockudo:test")
+    #expect(decoded.channel == "chat:room-1")
+    #expect((decoded.data as? [String: Any])?["hello"] as? String == "world")
+    #expect(((decoded.data as? [String: Any])?["count"] as? NSNumber)?.intValue == 3)
+    #expect(decoded.sequence == 7)
+    #expect(decoded.conflationKey == "room")
+}
+
+@Test
+func protobufRoundTrip() throws {
+    let payload = try ProtocolCodec.encodeEnvelope(
+        [
+            "event": "sockudo:test",
+            "channel": "chat:room-1",
+            "data": [
+                "hello": "world"
+            ],
+            "__delta_seq": 11,
+            "__conflation_key": "btc",
+            "extras": [
+                "headers": [
+                    "region": "eu",
+                    "ttl": 5,
+                    "replay": true,
+                ],
+                "echo": false,
+            ],
+        ],
+        format: .protobuf
+    )
+    let message: URLSessionWebSocketTask.Message =
+        switch payload {
+        case .string(let text): .string(text)
+        case .data(let data): .data(data)
+        }
+
+    let decoded = try ProtocolCodec.decodeEvent(message, format: .protobuf)
+
+    #expect(decoded.event == "sockudo:test")
+    #expect(decoded.channel == "chat:room-1")
+    #expect((decoded.data as? [String: Any])?["hello"] as? String == "world")
+    #expect(decoded.sequence == 11)
+    #expect(decoded.conflationKey == "btc")
+    #expect(decoded.extras?.headers?["region"] == .string("eu"))
+    #expect(decoded.extras?.headers?["ttl"] == .int(5))
+    #expect(decoded.extras?.headers?["replay"] == .bool(true))
+    #expect(decoded.extras?.echo == false)
+}
+
+@Test
 func localSockudoIntegrationConnectsAndReceivesPublishedEvent() async throws {
     guard ProcessInfo.processInfo.environment["SOCKUDO_LIVE_TESTS"] == "1" else {
         return
@@ -125,7 +231,8 @@ func localSockudoIntegrationConnectsAndReceivesPublishedEvent() async throws {
             enabledTransports: [.ws],
             wsHost: "127.0.0.1",
             wsPort: 6001,
-            wssPort: 6001
+            wssPort: 6001,
+            wireFormat: liveWireFormat()
         )
     )
 
@@ -133,7 +240,7 @@ func localSockudoIntegrationConnectsAndReceivesPublishedEvent() async throws {
     client.bind("connected") { _, _ in
         connected.value = true
     }
-    channel.bind("pusher:subscription_succeeded") { _, _ in
+    channel.bind("sockudo:subscription_succeeded") { _, _ in
         subscribed.value = true
     }
     channel.bind("integration-event") { data, _ in

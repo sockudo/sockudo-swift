@@ -199,6 +199,20 @@ public enum Transport: String, Sendable, CaseIterable, Codable {
     case wss
 }
 
+public enum SockudoWireFormat: String, Sendable, Codable, Equatable {
+    case json
+    case messagepack
+    case protobuf
+
+    var isBinary: Bool {
+        self != .json
+    }
+
+    var queryValue: String {
+        rawValue
+    }
+}
+
 public enum ConnectionState: String, Sendable, Equatable {
     case initialized
     case connecting
@@ -243,13 +257,72 @@ public struct ChannelDeltaSettings: Sendable, Codable, Equatable {
     }
 }
 
+public enum ExtraValue: Sendable, Codable, Equatable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else {
+            self = .string(try container.decode(String.self))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        }
+    }
+
+    var rawValue: Any {
+        switch self {
+        case .string(let value): value
+        case .int(let value): value
+        case .double(let value): value
+        case .bool(let value): value
+        }
+    }
+}
+
+public struct MessageExtras: Sendable, Codable, Equatable {
+    public var headers: [String: ExtraValue]?
+    public var ephemeral: Bool?
+    public var idempotencyKey: String?
+    public var echo: Bool?
+
+    public init(headers: [String: ExtraValue]? = nil, ephemeral: Bool? = nil, idempotencyKey: String? = nil, echo: Bool? = nil) {
+        self.headers = headers
+        self.ephemeral = ephemeral
+        self.idempotencyKey = idempotencyKey
+        self.echo = echo
+    }
+}
+
 public struct SubscriptionOptions: Sendable, Codable, Equatable {
     public var filter: FilterNode?
     public var delta: ChannelDeltaSettings?
+    public var events: [String]?
 
-    public init(filter: FilterNode? = nil, delta: ChannelDeltaSettings? = nil) {
+    public init(filter: FilterNode? = nil, delta: ChannelDeltaSettings? = nil, events: [String]? = nil) {
         self.filter = filter
         self.delta = delta
+        self.events = events
     }
 }
 
@@ -307,14 +380,17 @@ public struct PresenceMember: Equatable {
     }
 }
 
-public struct PusherEvent: @unchecked Sendable {
+public struct SockudoEvent: @unchecked Sendable {
     let event: String
     let channel: String?
     let data: Any?
     let userID: String?
+    let messageId: String?
     let rawMessage: String
     let sequence: Int?
     let conflationKey: String?
+    let serial: Int?
+    let extras: MessageExtras?
 }
 
 enum Logger {

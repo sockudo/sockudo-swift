@@ -4,6 +4,7 @@ import Network
 public final class SockudoClient: @unchecked Sendable {
     public struct Options {
         public var cluster: String
+        public var protocolVersion: Int
         public var activityTimeout: TimeInterval
         public var forceTLS: Bool?
         public var enabledTransports: [Transport]?
@@ -24,9 +25,15 @@ public final class SockudoClient: @unchecked Sendable {
         public var channelAuthorization: ChannelAuthorizationOptions
         public var userAuthentication: UserAuthenticationOptions
         public var deltaCompression: DeltaOptions?
+        public var messageDeduplication: Bool
+        public var messageDeduplicationCapacity: Int
+        public var connectionRecovery: Bool
+        public var echoMessages: Bool
+        public var wireFormat: SockudoWireFormat
 
         public init(
             cluster: String,
+            protocolVersion: Int = 2,
             activityTimeout: TimeInterval = 120,
             forceTLS: Bool? = nil,
             enabledTransports: [Transport]? = nil,
@@ -38,17 +45,23 @@ public final class SockudoClient: @unchecked Sendable {
             httpHost: String? = nil,
             httpPort: Int = 80,
             httpsPort: Int = 443,
-            httpPath: String = "/pusher",
+            httpPath: String = "/sockudo",
             pongTimeout: TimeInterval = 30,
             unavailableTimeout: TimeInterval = 10,
             enableStats: Bool = false,
-            statsHost: String = "stats.pusher.com",
+            statsHost: String = "stats.sockudo.com",
             timelineParams: [String: AuthValue] = [:],
             channelAuthorization: ChannelAuthorizationOptions = .init(),
             userAuthentication: UserAuthenticationOptions = .init(),
-            deltaCompression: DeltaOptions? = nil
+            deltaCompression: DeltaOptions? = nil,
+            messageDeduplication: Bool = true,
+            messageDeduplicationCapacity: Int = 1000,
+            connectionRecovery: Bool = false,
+            echoMessages: Bool = true,
+            wireFormat: SockudoWireFormat = .json
         ) {
             self.cluster = cluster
+            self.protocolVersion = protocolVersion
             self.activityTimeout = activityTimeout
             self.forceTLS = forceTLS
             self.enabledTransports = enabledTransports
@@ -69,6 +82,11 @@ public final class SockudoClient: @unchecked Sendable {
             self.channelAuthorization = channelAuthorization
             self.userAuthentication = userAuthentication
             self.deltaCompression = deltaCompression
+            self.messageDeduplication = messageDeduplication
+            self.messageDeduplicationCapacity = messageDeduplicationCapacity
+            self.connectionRecovery = connectionRecovery
+            self.echoMessages = echoMessages
+            self.wireFormat = wireFormat
         }
     }
 
@@ -83,6 +101,7 @@ public final class SockudoClient: @unchecked Sendable {
     }
 
     public let key: String
+    let p: ProtocolPrefix
     var config: ResolvedConfiguration
     public private(set) var connectionState: ConnectionState = .initialized
     public private(set) var socketID: String?
@@ -100,6 +119,8 @@ public final class SockudoClient: @unchecked Sendable {
     private var timelineSenderTimer: Timer?
     private let reachability = ReachabilityMonitor()
     private var deltaManager: DeltaCompressionManager?
+    private var deduplicator: MessageDeduplicator?
+    private var channelSerials: [String: Int] = [:]
     private var timeline = Timeline()
     private var currentTransport: Transport?
     private var attemptedFallback = false
@@ -112,6 +133,7 @@ public final class SockudoClient: @unchecked Sendable {
         }
 
         self.key = key
+        self.p = ProtocolPrefix(version: options.protocolVersion)
         self.config = ResolvedConfiguration(options: options)
         self.user = UserFacade()
         self.watchlist = WatchlistFacade()
@@ -123,6 +145,9 @@ public final class SockudoClient: @unchecked Sendable {
                 configuration: configuration, delegate: webSocketDelegate, delegateQueue: nil)
 
         self.deltaManager = nil
+        if options.messageDeduplication {
+            self.deduplicator = MessageDeduplicator(capacity: options.messageDeduplicationCapacity)
+        }
 
         reachability.stateDidChange = { [weak self] isOnline in
             Task { @MainActor in
@@ -141,7 +166,7 @@ public final class SockudoClient: @unchecked Sendable {
         watchlist.attach(client: self)
 
         if let deltaOptions = options.deltaCompression {
-            self.deltaManager = DeltaCompressionManager(options: deltaOptions) {
+            self.deltaManager = DeltaCompressionManager(options: deltaOptions, prefix: self.p) {
                 [weak self] event, data in
                 guard let self else { return false }
                 return (try? self.sendEvent(name: event, data: data, channel: nil)) ?? false
@@ -219,6 +244,7 @@ public final class SockudoClient: @unchecked Sendable {
         } else if let channel = channels.removeValue(forKey: name), channel.isSubscribed {
             channel.unsubscribe()
         }
+        channelSerials.removeValue(forKey: name)
         deltaManager?.clearChannelState(name)
     }
 
@@ -271,8 +297,13 @@ public final class SockudoClient: @unchecked Sendable {
         if let channel {
             envelope["channel"] = channel
         }
-        let payload = try JSON.encodeString(envelope)
-        webSocketTask.send(.string(payload)) { error in
+        let payload = try ProtocolCodec.encodeEnvelope(envelope, format: config.wireFormat)
+        let message: URLSessionWebSocketTask.Message =
+            switch payload {
+            case .string(let text): .string(text)
+            case .data(let data): .data(data)
+            }
+        webSocketTask.send(message) { error in
             if let error {
                 Task { @MainActor in
                     Logger.error("Send failed", error.localizedDescription)
@@ -335,9 +366,9 @@ public final class SockudoClient: @unchecked Sendable {
                 case .success(let message):
                     switch message {
                     case .string(let text):
-                        self.handle(rawMessage: text)
+                        self.handle(rawMessage: .string(text))
                     case .data(let data):
-                        self.handle(rawMessage: String(decoding: data, as: UTF8.self))
+                        self.handle(rawMessage: .data(data))
                     @unknown default:
                         break
                     }
@@ -347,13 +378,26 @@ public final class SockudoClient: @unchecked Sendable {
         }
     }
 
-    private func handle(rawMessage: String) {
+    private func handle(rawMessage: URLSessionWebSocketTask.Message) {
         do {
             let event = try decodeEvent(rawMessage: rawMessage)
             resetActivityTimer()
 
-            switch event.event {
-            case "pusher:connection_established":
+            if let messageId = event.messageId, let deduplicator {
+                if deduplicator.isDuplicate(messageId) {
+                    Logger.debug("Skipping duplicate message", messageId)
+                    return
+                }
+                deduplicator.track(messageId)
+            }
+
+            // Track serial per channel for connection recovery
+            if config.connectionRecovery, let channelName = event.channel, let serial = event.serial {
+                channelSerials[channelName] = serial
+            }
+
+            let eventName = event.event
+            if eventName == p.event("connection_established") {
                 guard let payload = event.data as? [String: Any],
                     let socketID = payload["socket_id"] as? String
                 else {
@@ -367,6 +411,12 @@ public final class SockudoClient: @unchecked Sendable {
                 clearUnavailableTimer()
                 updateState(.connected, metadata: ["socket_id": socketID])
                 subscribeAll()
+                if config.connectionRecovery, channelSerials.isEmpty == false {
+                    let serialsPayload: [String: Any] = ["channel_serials": channelSerials]
+                    if let jsonData = try? JSON.encodeString(serialsPayload) {
+                        _ = try? sendEvent(name: p.event("resume"), data: jsonData, channel: nil)
+                    }
+                }
                 if config.enableStats {
                     startTimelineSender()
                 }
@@ -374,24 +424,24 @@ public final class SockudoClient: @unchecked Sendable {
                     deltaManager?.enable()
                 }
                 user.handleConnected()
-            case "pusher:error":
+            } else if eventName == p.event("error") {
                 dispatcher.emit("error", data: event.data)
-            case "pusher:ping":
-                _ = try? sendEvent(name: "pusher:pong", data: [:], channel: nil)
-            case "pusher:pong":
-                break
-            case "pusher:signin_success":
+            } else if eventName == p.event("ping") {
+                _ = try? sendEvent(name: p.event("pong"), data: [:], channel: nil)
+            } else if eventName == p.event("pong") {
+                // no-op
+            } else if eventName == p.event("signin_success") {
                 user.handleSignInSuccess(event.data)
-            case "pusher_internal:watchlist_events":
+            } else if eventName == p.internal("watchlist_events") {
                 watchlist.handle(event.data)
-            case "pusher:delta_compression_enabled":
+            } else if eventName == p.event("delta_compression_enabled") {
                 deltaManager?.handleEnabled(event.data)
-                dispatcher.emit(event.event, data: event.data)
-            case "pusher:delta_cache_sync":
+                dispatcher.emit(eventName, data: event.data)
+            } else if eventName == p.event("delta_cache_sync") {
                 if let channel = event.channel {
                     deltaManager?.handleCacheSync(channel: channel, data: event.data)
                 }
-            case "pusher:delta":
+            } else if eventName == p.event("delta") {
                 if let channelName = event.channel,
                     let reconstructed = deltaManager?.handleDeltaMessage(
                         channel: channelName, data: event.data)
@@ -399,11 +449,22 @@ public final class SockudoClient: @unchecked Sendable {
                     channels[channelName]?.handle(event: reconstructed)
                     dispatcher.emit(reconstructed.event, data: reconstructed.data)
                 }
-            default:
+            } else if eventName == p.event("resume_success") {
+                Logger.debug("Connection recovery succeeded", event.data as Any)
+            } else if eventName == p.event("resume_failed") {
+                if let failData = event.data as? [String: Any],
+                    let failedChannelName = failData["channel"] as? String
+                {
+                    channelSerials.removeValue(forKey: failedChannelName)
+                    Logger.warn(
+                        "Connection recovery failed for channel", failedChannelName)
+                    channels[failedChannelName]?.subscribeIfPossible()
+                }
+            } else {
                 if let channelName = event.channel {
                     channels[channelName]?.handle(event: event)
-                    if let sequence = event.sequence, event.event.hasPrefix("pusher:") == false,
-                        event.event.hasPrefix("pusher_internal:") == false
+                    if let sequence = event.sequence, p.isPlatformEvent(eventName) == false,
+                        p.isInternalEvent(eventName) == false
                     {
                         let stripped = stripDeltaMetadata(from: rawMessage)
                         deltaManager?.handleFullMessage(
@@ -411,9 +472,9 @@ public final class SockudoClient: @unchecked Sendable {
                             conflationKey: event.conflationKey)
                     }
                 }
-                if event.event.hasPrefix("pusher_internal:") == false {
+                if p.isInternalEvent(eventName) == false {
                     dispatcher.emit(
-                        event.event, data: event.data, metadata: EventMetadata(userID: event.userID)
+                        eventName, data: event.data, metadata: EventMetadata(userID: event.userID)
                     )
                 }
             }
@@ -422,33 +483,15 @@ public final class SockudoClient: @unchecked Sendable {
         }
     }
 
-    private func decodeEvent(rawMessage: String) throws -> PusherEvent {
-        guard let data = rawMessage.data(using: .utf8) else {
-            throw SockudoError.messageParseError("Invalid UTF-8 message")
-        }
-        guard let object = try JSON.decode(data) as? [String: Any],
-            let eventName = object["event"] as? String
-        else {
-            throw SockudoError.messageParseError("Unable to decode event envelope")
-        }
-        var eventData = object["data"]
-        if let stringData = eventData as? String, let parsed = try? JSON.decodeString(stringData) {
-            eventData = parsed
-        }
-        return PusherEvent(
-            event: eventName,
-            channel: object["channel"] as? String,
-            data: eventData,
-            userID: object["user_id"] as? String,
-            rawMessage: rawMessage,
-            sequence: object["__delta_seq"] as? Int ?? object["sequence"] as? Int,
-            conflationKey: object["__conflation_key"] as? String ?? object["conflation_key"]
-                as? String
-        )
+    private func decodeEvent(rawMessage: URLSessionWebSocketTask.Message) throws -> SockudoEvent {
+        try ProtocolCodec.decodeEvent(rawMessage, format: config.wireFormat)
     }
 
-    private func stripDeltaMetadata(from rawMessage: String) -> String {
-        var result = rawMessage
+    private func stripDeltaMetadata(from rawMessage: URLSessionWebSocketTask.Message) -> String {
+        let decoded =
+            (try? ProtocolCodec.decodeEnvelope(rawMessage, format: config.wireFormat).rawMessage)
+            ?? ""
+        var result = decoded
         result = result.replacingOccurrences(
             of: #","__delta_seq":\d+"#, with: "", options: .regularExpression)
         result = result.replacingOccurrences(
@@ -502,7 +545,7 @@ public final class SockudoClient: @unchecked Sendable {
         return .refused
     }
 
-    private func socketURL(for transport: Transport) throws -> URL {
+    func socketURL(for transport: Transport) throws -> URL {
         let scheme = transport == .wss ? "wss" : "ws"
         let host = config.wsHost
         let port = transport == .wss ? config.wssPort : config.wsPort
@@ -512,12 +555,16 @@ public final class SockudoClient: @unchecked Sendable {
         components.host = host
         components.port = port
         components.path = path
-        components.queryItems = [
-            .init(name: "protocol", value: "7"),
+        var queryItems: [URLQueryItem] = [
+            .init(name: "protocol", value: "\(p.version)"),
             .init(name: "client", value: "swift"),
             .init(name: "version", value: "1.1.0"),
             .init(name: "flash", value: "false"),
         ]
+        if config.protocolVersion >= 2 {
+            queryItems.append(.init(name: "format", value: config.wireFormat.queryValue))
+        }
+        components.queryItems = queryItems
         guard let url = components.url else {
             throw SockudoError.invalidURL("Unable to build WebSocket URL")
         }
@@ -536,7 +583,7 @@ public final class SockudoClient: @unchecked Sendable {
     }
 
     private func sendPing() {
-        _ = try? sendEvent(name: "pusher:ping", data: [:], channel: nil)
+        _ = try? sendEvent(name: p.event("ping"), data: [:], channel: nil)
         invalidateActivityTimer()
         activityTimer = Timer.scheduledTimer(withTimeInterval: config.pongTimeout, repeats: false) {
             [weak self] _ in
@@ -716,7 +763,7 @@ public final class UserFacade: @unchecked Sendable {
                     self.cleanup()
                 case .success(let authData):
                     _ = try? client.sendEvent(
-                        name: "pusher:signin",
+                        name: client.p.event("signin"),
                         data: [
                             "auth": authData.auth,
                             "user_data": authData.userData,
@@ -730,10 +777,11 @@ public final class UserFacade: @unchecked Sendable {
         guard let client else { return }
         let channel = Channel(name: "#server-to-user-\(userID)", client: client)
         channel.onGlobal { [weak self] eventName, data in
-            guard eventName.hasPrefix("pusher_internal:") == false,
-                eventName.hasPrefix("pusher:") == false
+            guard let self, let client = self.client else { return }
+            guard client.p.isInternalEvent(eventName) == false,
+                client.p.isPlatformEvent(eventName) == false
             else { return }
-            self?.dispatcher.emit(eventName, data: data)
+            self.dispatcher.emit(eventName, data: data)
         }
         serverChannel = channel
         channel.subscribeIfPossible()
@@ -781,8 +829,10 @@ public final class WatchlistFacade: @unchecked Sendable {
 extension SockudoClient {
     struct ResolvedConfiguration {
         let cluster: String
+        let protocolVersion: Int
         var activityTimeout: TimeInterval
         var useTLS: Bool
+        let wireFormat: SockudoWireFormat
         let wsHost: String
         let wsPort: Int
         let wssPort: Int
@@ -801,16 +851,21 @@ extension SockudoClient {
         let channelAuthorizer: ChannelAuthorizationHandler
         let userAuthenticator: UserAuthenticationHandler
         let deltaCompressionEnabled: Bool
+        let messageDeduplication: Bool
+        let messageDeduplicationCapacity: Int
+        let connectionRecovery: Bool
 
         init(options: Options) {
             cluster = options.cluster
+            protocolVersion = options.protocolVersion
             activityTimeout = options.activityTimeout
             useTLS = options.forceTLS == false ? false : true
-            wsHost = options.wsHost ?? "ws-\(options.cluster).pusher.com"
+            wireFormat = options.wireFormat
+            wsHost = options.wsHost ?? "ws-\(options.cluster).sockudo.com"
             wsPort = options.wsPort
             wssPort = options.wssPort
             wsPath = options.wsPath
-            httpHost = options.httpHost ?? "sockjs-\(options.cluster).pusher.com"
+            httpHost = options.httpHost ?? "sockjs-\(options.cluster).sockudo.com"
             httpPort = options.httpPort
             httpsPort = options.httpsPort
             httpPath = options.httpPath
@@ -822,6 +877,9 @@ extension SockudoClient {
             enabledTransports = options.enabledTransports
             disabledTransports = options.disabledTransports
             deltaCompressionEnabled = options.deltaCompression?.enabled == true
+            messageDeduplication = options.messageDeduplication
+            messageDeduplicationCapacity = options.messageDeduplicationCapacity
+            connectionRecovery = options.connectionRecovery
             channelAuthorizer =
                 options.channelAuthorization.customHandler
                 ?? Self.makeChannelAuthorizer(options.channelAuthorization)
