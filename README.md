@@ -74,6 +74,21 @@ channel.bind("price-updated") { data, _ in
 client.connect()
 ```
 
+The default client mode is Protocol V1 compatibility (`protocol=7`). Opt into Protocol V2 explicitly when you want Sockudo-native event prefixes and V2-only features.
+
+```swift
+let v2Client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        forceTLS: false,
+        wsHost: "127.0.0.1",
+        wsPort: 6001,
+        protocolVersion: 2
+    )
+)
+```
+
 ## Advanced Usage
 
 ### Channel Authorization
