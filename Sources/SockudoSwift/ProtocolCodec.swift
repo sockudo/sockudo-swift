@@ -98,6 +98,7 @@ enum ProtocolCodec {
       channel: envelope["channel"] as? String,
       data: eventData,
       userID: envelope["user_id"] as? String,
+      streamID: envelope["stream_id"] as? String,
       messageId: envelope["message_id"] as? String,
       rawMessage: decoded.rawMessage,
       sequence: (envelope["__delta_seq"] as? NSNumber)?.intValue
@@ -132,6 +133,7 @@ private enum MessagePackCodec {
     "sequence",
     "conflation_key",
     "message_id",
+    "stream_id",
     "serial",
     "idempotency_key",
     "extras",
@@ -215,6 +217,7 @@ private enum MessagePackCodec {
       envelope["sequence"] ?? NSNull(),
       envelope["conflation_key"] ?? NSNull(),
       envelope["message_id"] ?? NSNull(),
+      envelope["stream_id"] ?? NSNull(),
       envelope["serial"] ?? NSNull(),
       envelope["idempotency_key"] ?? NSNull(),
       extrasValue,
@@ -532,6 +535,9 @@ private enum ProtobufCodec {
     if let messageID = envelope["message_id"] as? String {
       writer.writeString(field: 9, value: messageID)
     }
+    if let streamID = envelope["stream_id"] as? String {
+      writer.writeString(field: 15, value: streamID)
+    }
     if let serial = (envelope["serial"] as? NSNumber)?.uint64Value {
       writer.writeVarint(field: 10, value: serial)
     }
@@ -600,6 +606,7 @@ private enum ProtobufCodec {
       case (12, .lengthDelimited): envelope["extras"] = try decodeExtras(reader.readData())
       case (13, .varint): envelope["__delta_seq"] = NSNumber(value: try reader.readVarint())
       case (14, .lengthDelimited): envelope["__conflation_key"] = try reader.readString()
+      case (15, .lengthDelimited): envelope["stream_id"] = try reader.readString()
       default: try reader.skip(wireType: wireType)
       }
     }

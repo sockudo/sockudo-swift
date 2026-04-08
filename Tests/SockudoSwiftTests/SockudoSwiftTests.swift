@@ -116,6 +116,8 @@ func deltaSettingsSerializeAsExpected() {
   #expect(ChannelDeltaSettings(enabled: true).subscriptionValue() as? Bool == true)
   #expect(ChannelDeltaSettings(enabled: false).subscriptionValue() as? Bool == false)
   #expect(ChannelDeltaSettings(algorithm: .fossil).subscriptionValue() as? String == "fossil")
+  #expect(SubscriptionRewind.count(10).subscriptionValue() as? Int == 10)
+  #expect((SubscriptionRewind.seconds(30).subscriptionValue() as? [String: Int])?["seconds"] == 30)
 }
 
 @Test
@@ -124,8 +126,8 @@ func websocketURLIncludesV2FormatQuery() throws {
     "app-key",
     options: .init(
       cluster: "local",
-      forceTLS: false,
       protocolVersion: 2,
+      forceTLS: false,
       enabledTransports: [.ws],
       wsHost: "ws.example.com",
       wsPort: 6001,
@@ -136,8 +138,9 @@ func websocketURLIncludesV2FormatQuery() throws {
 
   let url = try client.socketURL(for: .ws)
   let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+  let queryItems: [URLQueryItem] = components?.queryItems ?? []
   let query = Dictionary(
-    uniqueKeysWithValues: (components?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+    uniqueKeysWithValues: queryItems.map { ($0.name, $0.value ?? "") })
 
   #expect(query["protocol"] == "2")
   #expect(query["format"] == "messagepack")
@@ -177,6 +180,9 @@ func messagePackRoundTrip() throws {
         "hello": "world",
         "count": 3,
       ],
+      "stream_id": "stream-1",
+      "message_id": "msg-1",
+      "serial": 7,
       "__delta_seq": 7,
       "__conflation_key": "room",
     ],
@@ -194,6 +200,9 @@ func messagePackRoundTrip() throws {
   #expect(decoded.channel == "chat:room-1")
   #expect((decoded.data as? [String: Any])?["hello"] as? String == "world")
   #expect(((decoded.data as? [String: Any])?["count"] as? NSNumber)?.intValue == 3)
+  #expect(decoded.streamID == "stream-1")
+  #expect(decoded.messageId == "msg-1")
+  #expect(decoded.serial == 7)
   #expect(decoded.sequence == 7)
   #expect(decoded.conflationKey == "room")
 }
@@ -207,6 +216,9 @@ func protobufRoundTrip() throws {
       "data": [
         "hello": "world"
       ],
+      "stream_id": "stream-2",
+      "message_id": "msg-2",
+      "serial": 9,
       "__delta_seq": 11,
       "__conflation_key": "btc",
       "extras": [
@@ -231,6 +243,9 @@ func protobufRoundTrip() throws {
   #expect(decoded.event == "sockudo:test")
   #expect(decoded.channel == "chat:room-1")
   #expect((decoded.data as? [String: Any])?["hello"] as? String == "world")
+  #expect(decoded.streamID == "stream-2")
+  #expect(decoded.messageId == "msg-2")
+  #expect(decoded.serial == 9)
   #expect(decoded.sequence == 11)
   #expect(decoded.conflationKey == "btc")
   #expect(decoded.extras?.headers?["region"] == .string("eu"))
@@ -253,8 +268,8 @@ func localSockudoIntegrationConnectsAndReceivesPublishedEvent() async throws {
     "app-key",
     options: .init(
       cluster: "local",
-      forceTLS: false,
       protocolVersion: 2,
+      forceTLS: false,
       enabledTransports: [.ws],
       wsHost: "127.0.0.1",
       wsPort: 6001,

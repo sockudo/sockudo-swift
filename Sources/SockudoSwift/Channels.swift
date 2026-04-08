@@ -11,6 +11,7 @@ public class Channel: @unchecked Sendable {
   var subscriptionCount: Int?
   var tagsFilter: FilterNode?
   var deltaSettings: ChannelDeltaSettings?
+  var rewind: SubscriptionRewind?
 
   init(name: String, client: SockudoClient) {
     self.name = name
@@ -116,6 +117,9 @@ public class Channel: @unchecked Sendable {
         }
         if let deltaSettings = self.deltaSettings {
           payload["delta"] = deltaSettings.subscriptionValue()
+        }
+        if let rewind = self.rewind {
+          payload["rewind"] = rewind.subscriptionValue()
         }
         do {
           _ = try self.client.sendEvent(

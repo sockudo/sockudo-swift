@@ -321,14 +321,74 @@ public struct SubscriptionOptions: Sendable, Codable, Equatable {
   public var filter: FilterNode?
   public var delta: ChannelDeltaSettings?
   public var events: [String]?
+  public var rewind: SubscriptionRewind?
 
   public init(
-    filter: FilterNode? = nil, delta: ChannelDeltaSettings? = nil, events: [String]? = nil
+    filter: FilterNode? = nil,
+    delta: ChannelDeltaSettings? = nil,
+    events: [String]? = nil,
+    rewind: SubscriptionRewind? = nil
   ) {
     self.filter = filter
     self.delta = delta
     self.events = events
+    self.rewind = rewind
   }
+}
+
+public enum SubscriptionRewind: Sendable, Codable, Equatable {
+  case count(Int)
+  case seconds(Int)
+
+  func subscriptionValue() -> Any {
+    switch self {
+    case .count(let count):
+      return count
+    case .seconds(let seconds):
+      return ["seconds": seconds]
+    }
+  }
+}
+
+public struct RecoveryPosition: Sendable, Codable, Equatable {
+  public let streamID: String?
+  public let serial: Int
+  public let lastMessageID: String?
+
+  public init(streamID: String? = nil, serial: Int, lastMessageID: String? = nil) {
+    self.streamID = streamID
+    self.serial = serial
+    self.lastMessageID = lastMessageID
+  }
+}
+
+public struct ResumeRecoveredChannel: Sendable, Codable, Equatable {
+  public let channel: String
+  public let source: String
+  public let replayed: Int
+}
+
+public struct ResumeFailedChannel: Sendable, Codable, Equatable {
+  public let channel: String
+  public let code: String
+  public let reason: String
+  public let expectedStreamID: String?
+  public let currentStreamID: String?
+  public let oldestAvailableSerial: Int?
+  public let newestAvailableSerial: Int?
+}
+
+public struct ResumeSuccessData: Sendable, Codable, Equatable {
+  public let recovered: [ResumeRecoveredChannel]
+  public let failed: [ResumeFailedChannel]
+}
+
+public struct RewindCompleteData: Sendable, Codable, Equatable {
+  public let historicalCount: Int
+  public let liveCount: Int
+  public let complete: Bool
+  public let truncatedByRetention: Bool
+  public let truncatedByLimit: Bool
 }
 
 public struct DeltaOptions {
@@ -390,6 +450,7 @@ public struct SockudoEvent: @unchecked Sendable {
   let channel: String?
   let data: Any?
   let userID: String?
+  let streamID: String?
   let messageId: String?
   let rawMessage: String
   let sequence: Int?

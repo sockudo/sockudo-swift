@@ -197,6 +197,7 @@ final class DeltaCompressionManager {
         channel: channel,
         data: eventData,
         userID: nil,
+        streamID: nil,
         messageId: nil,
         rawMessage: reconstructed,
         sequence: sequence,

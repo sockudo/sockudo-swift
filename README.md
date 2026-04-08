@@ -21,6 +21,7 @@ Official Swift client for Sockudo.
 - Filter-aware subscriptions
 - Fossil and Xdelta3/VCDIFF delta reconstruction
 - Encrypted channel payload decryption with `swift-sodium`
+- Continuity-aware connection recovery and subscribe-time rewind on Protocol V2
 - Live integration tests against Sockudo on `127.0.0.1:6001`
 - Swift Package Manager distribution with GitHub Actions CI
 
@@ -118,6 +119,39 @@ let channel = client.subscribe(
         delta: .init(enabled: true, algorithm: .xdelta3)
     )
 )
+```
+
+### Recovery And Rewind
+
+```swift
+let client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        protocolVersion: 2,
+        forceTLS: false,
+        wsHost: "127.0.0.1",
+        wsPort: 6001,
+        connectionRecovery: true
+    )
+)
+
+let channel = client.subscribe(
+    "market:BTC",
+    options: .init(rewind: .seconds(30))
+)
+
+channel.bind("message") { _, _ in
+    print(client.recoveryPosition(for: "market:BTC") as Any)
+}
+
+client.bind("sockudo:resume_success") { data, _ in
+    print(data as Any)
+}
+
+channel.bind("sockudo:rewind_complete") { data, _ in
+    print(data as Any)
+}
 ```
 
 ### Encrypted Channels

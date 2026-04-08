@@ -120,7 +120,7 @@ public final class SockudoClient: @unchecked Sendable {
   private let reachability = ReachabilityMonitor()
   private var deltaManager: DeltaCompressionManager?
   private var deduplicator: MessageDeduplicator?
-  private var channelSerials: [String: Int] = [:]
+  private var channelPositions: [String: RecoveryPosition] = [:]
   private var timeline = Timeline()
   private var currentTransport: Transport?
   private var attemptedFallback = false
@@ -229,6 +229,7 @@ public final class SockudoClient: @unchecked Sendable {
     if let options {
       channel.tagsFilter = options.filter
       channel.deltaSettings = options.delta
+      channel.rewind = options.rewind
     }
     channel.subscribeIfPossible()
     return channel
@@ -244,7 +245,7 @@ public final class SockudoClient: @unchecked Sendable {
     } else if let channel = channels.removeValue(forKey: name), channel.isSubscribed {
       channel.unsubscribe()
     }
-    channelSerials.removeValue(forKey: name)
+    channelPositions.removeValue(forKey: name)
     deltaManager?.clearChannelState(name)
   }
 
@@ -288,6 +289,22 @@ public final class SockudoClient: @unchecked Sendable {
 
   public func resetDeltaStats() {
     deltaManager?.resetStats()
+  }
+
+  public func recoveryPosition(for channelName: String) -> RecoveryPosition? {
+    channelPositions[channelName]
+  }
+
+  public func recoveryPositions() -> [String: RecoveryPosition] {
+    channelPositions
+  }
+
+  public func setRecoveryPosition(_ position: RecoveryPosition?, for channelName: String) {
+    channelPositions[channelName] = position
+  }
+
+  public func setRecoveryPositions(_ positions: [String: RecoveryPosition]) {
+    channelPositions = positions
   }
 
   func sendEvent(name: String, data: Any, channel: String?) throws -> Bool {
@@ -395,7 +412,11 @@ public final class SockudoClient: @unchecked Sendable {
 
       // Track serial per channel for connection recovery
       if config.connectionRecovery, let channelName = event.channel, let serial = event.serial {
-        channelSerials[channelName] = serial
+        channelPositions[channelName] = RecoveryPosition(
+          streamID: event.streamID,
+          serial: serial,
+          lastMessageID: event.messageId
+        )
       }
 
       let eventName = event.event
@@ -413,9 +434,21 @@ public final class SockudoClient: @unchecked Sendable {
         clearUnavailableTimer()
         updateState(.connected, metadata: ["socket_id": socketID])
         subscribeAll()
-        if config.connectionRecovery, channelSerials.isEmpty == false {
-          let serialsPayload: [String: Any] = ["channel_serials": channelSerials]
-          if let jsonData = try? JSON.encodeString(serialsPayload) {
+        if config.connectionRecovery, channelPositions.isEmpty == false {
+          let positionsPayload: [String: Any] = [
+            "channel_positions": Dictionary(
+              uniqueKeysWithValues: channelPositions.map { channel, position in
+                (
+                  channel,
+                  [
+                    "serial": position.serial,
+                    "stream_id": position.streamID as Any,
+                    "last_message_id": position.lastMessageID as Any,
+                  ].compactMapValues { $0 }
+                )
+              })
+          ]
+          if let jsonData = try? JSON.encodeString(positionsPayload) {
             _ = try? sendEvent(name: p.event("resume"), data: jsonData, channel: nil)
           }
         }
@@ -452,31 +485,47 @@ public final class SockudoClient: @unchecked Sendable {
           dispatcher.emit(reconstructed.event, data: reconstructed.data)
         }
       } else if eventName == p.event("resume_success") {
-        Logger.debug("Connection recovery succeeded", event.data as Any)
+        let data = Self.decodeResumeSuccessData(event.data)
+        Logger.debug("Connection recovery succeeded", data)
+        dispatcher.emit(eventName, data: data)
       } else if eventName == p.event("resume_failed") {
-        if let failData = event.data as? [String: Any],
-          let failedChannelName = failData["channel"] as? String
-        {
-          channelSerials.removeValue(forKey: failedChannelName)
-          Logger.warn(
-            "Connection recovery failed for channel", failedChannelName)
-          channels[failedChannelName]?.subscribeIfPossible()
+        let failData = Self.decodeResumeFailedData(event.data)
+        if failData.channel.isEmpty == false {
+          channelPositions.removeValue(forKey: failData.channel)
+          Logger.warn("Connection recovery failed for channel", failData.channel)
+          channels[failData.channel]?.subscribeIfPossible()
         }
+        dispatcher.emit(eventName, data: failData)
       } else {
-        if let channelName = event.channel {
-          channels[channelName]?.handle(event: event)
-          if let sequence = event.sequence, p.isPlatformEvent(eventName) == false,
+        let normalizedEvent =
+          eventName == p.event("rewind_complete")
+          ? SockudoEvent(
+            event: event.event,
+            channel: event.channel,
+            data: Self.decodeRewindCompleteData(event.data),
+            userID: event.userID,
+            streamID: event.streamID,
+            messageId: event.messageId,
+            rawMessage: event.rawMessage,
+            sequence: event.sequence,
+            conflationKey: event.conflationKey,
+            serial: event.serial,
+            extras: event.extras
+          ) : event
+        if let channelName = normalizedEvent.channel {
+          channels[channelName]?.handle(event: normalizedEvent)
+          if let sequence = normalizedEvent.sequence, p.isPlatformEvent(eventName) == false,
             p.isInternalEvent(eventName) == false
           {
             let stripped = stripDeltaMetadata(from: rawMessage)
             deltaManager?.handleFullMessage(
               channel: channelName, rawMessage: stripped, sequence: sequence,
-              conflationKey: event.conflationKey)
+              conflationKey: normalizedEvent.conflationKey)
           }
         }
         if p.isInternalEvent(eventName) == false {
           dispatcher.emit(
-            eventName, data: event.data, metadata: EventMetadata(userID: event.userID)
+            eventName, data: normalizedEvent.data, metadata: EventMetadata(userID: normalizedEvent.userID)
           )
         }
       }
@@ -827,6 +876,48 @@ public final class WatchlistFacade: @unchecked Sendable {
         dispatcher.emit(name, data: event)
       }
     }
+  }
+}
+
+private extension SockudoClient {
+  static func decodeResumeSuccessData(_ raw: Any?) -> ResumeSuccessData {
+    let payload = raw as? [String: Any] ?? [:]
+    let recovered = (payload["recovered"] as? [[String: Any]] ?? []).map {
+      ResumeRecoveredChannel(
+        channel: $0["channel"] as? String ?? "",
+        source: $0["source"] as? String ?? "",
+        replayed: ($0["replayed"] as? NSNumber)?.intValue ?? 0
+      )
+    }
+    let failed = (payload["failed"] as? [[String: Any]] ?? []).map(decodeResumeFailedData)
+    return ResumeSuccessData(recovered: recovered, failed: failed)
+  }
+
+  static func decodeResumeFailedData(_ raw: [String: Any]) -> ResumeFailedChannel {
+    ResumeFailedChannel(
+      channel: raw["channel"] as? String ?? "",
+      code: raw["code"] as? String ?? "",
+      reason: raw["reason"] as? String ?? "",
+      expectedStreamID: raw["expected_stream_id"] as? String,
+      currentStreamID: raw["current_stream_id"] as? String,
+      oldestAvailableSerial: (raw["oldest_available_serial"] as? NSNumber)?.intValue,
+      newestAvailableSerial: (raw["newest_available_serial"] as? NSNumber)?.intValue
+    )
+  }
+
+  static func decodeResumeFailedData(_ raw: Any?) -> ResumeFailedChannel {
+    decodeResumeFailedData(raw as? [String: Any] ?? [:])
+  }
+
+  static func decodeRewindCompleteData(_ raw: Any?) -> RewindCompleteData {
+    let payload = raw as? [String: Any] ?? [:]
+    return RewindCompleteData(
+      historicalCount: (payload["historical_count"] as? NSNumber)?.intValue ?? 0,
+      liveCount: (payload["live_count"] as? NSNumber)?.intValue ?? 0,
+      complete: payload["complete"] as? Bool ?? false,
+      truncatedByRetention: payload["truncated_by_retention"] as? Bool ?? false,
+      truncatedByLimit: payload["truncated_by_limit"] as? Bool ?? false
+    )
   }
 }
 
