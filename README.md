@@ -15,6 +15,7 @@ Official Swift client for Sockudo.
 ## Features
 
 - Public, private, presence, and encrypted channels
+- Proxy-backed presence history and presence snapshot helpers
 - Channel authorization and user authentication
 - Client events on private channels
 - User sign-in and watchlist event handling
@@ -151,6 +152,34 @@ client.bind("sockudo:resume_success") { data, _ in
 
 channel.bind("sockudo:rewind_complete") { data, _ in
     print(data as Any)
+}
+```
+
+### Presence History
+
+Client-side presence history is proxy-backed. `SockudoSwift` does not sign the server REST API directly; configure `presenceHistory` with a backend endpoint that accepts `{channel, params, action}` and forwards the request using server credentials.
+
+```swift
+let client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        forceTLS: false,
+        wsHost: "127.0.0.1",
+        wsPort: 6001,
+        presenceHistory: .init(
+            endpoint: "https://api.example.com/sockudo/presence-history"
+        )
+    )
+)
+
+let channel = client.subscribe("presence-lobby") as! PresenceChannel
+channel.history(.init(limit: 50, direction: "newest_first")) { result in
+    print(result)
+}
+
+channel.snapshot(.init(atSerial: 4)) { result in
+    print(result)
 }
 ```
 

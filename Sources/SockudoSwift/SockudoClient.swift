@@ -24,6 +24,7 @@ public final class SockudoClient: @unchecked Sendable {
     public var timelineParams: [String: AuthValue]
     public var channelAuthorization: ChannelAuthorizationOptions
     public var userAuthentication: UserAuthenticationOptions
+    public var presenceHistory: PresenceHistoryOptions?
     public var deltaCompression: DeltaOptions?
     public var messageDeduplication: Bool
     public var messageDeduplicationCapacity: Int
@@ -53,6 +54,7 @@ public final class SockudoClient: @unchecked Sendable {
       timelineParams: [String: AuthValue] = [:],
       channelAuthorization: ChannelAuthorizationOptions = .init(),
       userAuthentication: UserAuthenticationOptions = .init(),
+      presenceHistory: PresenceHistoryOptions? = nil,
       deltaCompression: DeltaOptions? = nil,
       messageDeduplication: Bool = true,
       messageDeduplicationCapacity: Int = 1000,
@@ -81,6 +83,7 @@ public final class SockudoClient: @unchecked Sendable {
       self.timelineParams = timelineParams
       self.channelAuthorization = channelAuthorization
       self.userAuthentication = userAuthentication
+      self.presenceHistory = presenceHistory
       self.deltaCompression = deltaCompression
       self.messageDeduplication = messageDeduplication
       self.messageDeduplicationCapacity = messageDeduplicationCapacity
@@ -945,6 +948,7 @@ extension SockudoClient {
     let disabledTransports: [Transport]?
     let channelAuthorizer: ChannelAuthorizationHandler
     let userAuthenticator: UserAuthenticationHandler
+    let presenceHistory: PresenceHistoryOptions?
     let deltaCompressionEnabled: Bool
     let messageDeduplication: Bool
     let messageDeduplicationCapacity: Int
@@ -981,6 +985,7 @@ extension SockudoClient {
       userAuthenticator =
         options.userAuthentication.customHandler
         ?? Self.makeUserAuthenticator(options.userAuthentication)
+      presenceHistory = options.presenceHistory
     }
 
     private static func makeChannelAuthorizer(_ options: ChannelAuthorizationOptions)
@@ -1088,6 +1093,227 @@ extension SockudoClient {
         }
       }.resume()
     }
+  }
+}
+
+extension SockudoClient {
+  func fetchPresenceHistory(
+    channelName: String,
+    params: PresenceHistoryParams,
+    completion: @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void
+  ) {
+    guard let history = config.presenceHistory else {
+      completion(
+        .failure(
+          SockudoError.unsupportedFeature(
+            "presenceHistory.endpoint must be configured to use presence.history(). This endpoint should proxy requests to the Sockudo server REST API."
+          )))
+      return
+    }
+
+    performPresenceHistoryRequest(
+      endpoint: history.endpoint,
+      headers: history.headers.merging(
+        history.headersProvider?() ?? [:], uniquingKeysWith: { _, new in new }),
+      channelName: channelName,
+      params: params.payload,
+      action: "history"
+    ) { [weak self] result in
+      guard let self else { return }
+      completion(
+        result.flatMap { payload in
+          .success(
+            self.decodePresenceHistoryPage(
+              payload: payload,
+              channelName: channelName,
+              originalParams: params))
+        })
+    }
+  }
+
+  func fetchPresenceSnapshot(
+    channelName: String,
+    params: PresenceSnapshotParams,
+    completion: @escaping @Sendable (Result<PresenceSnapshot, Error>) -> Void
+  ) {
+    guard let history = config.presenceHistory else {
+      completion(
+        .failure(
+          SockudoError.unsupportedFeature(
+            "presenceHistory.endpoint must be configured to use presence.snapshot(). This endpoint should proxy requests to the Sockudo server REST API."
+          )))
+      return
+    }
+
+    performPresenceHistoryRequest(
+      endpoint: history.endpoint,
+      headers: history.headers.merging(
+        history.headersProvider?() ?? [:], uniquingKeysWith: { _, new in new }),
+      channelName: channelName,
+      params: params.payload,
+      action: "snapshot"
+    ) { [weak self] result in
+      guard let self else { return }
+      completion(result.flatMap { payload in .success(self.decodePresenceSnapshot(payload: payload)) })
+    }
+  }
+
+  private func performPresenceHistoryRequest(
+    endpoint: String,
+    headers: [String: String],
+    channelName: String,
+    params: [String: Any],
+    action: String,
+    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+  ) {
+    guard let url = URL(string: endpoint, relativeTo: nil) ?? URL(string: endpoint) else {
+      completion(.failure(SockudoError.invalidURL("Invalid presence history endpoint \(endpoint)")))
+      return
+    }
+
+    do {
+      var request = URLRequest(url: url)
+      request.httpMethod = "POST"
+      request.httpBody = try JSON.encodeData([
+        "channel": channelName,
+        "params": params,
+        "action": action,
+      ])
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      for (name, value) in headers {
+        request.setValue(value, forHTTPHeaderField: name)
+      }
+
+      urlSession.dataTask(with: request) { data, response, error in
+        Task { @MainActor in
+          if let error {
+            completion(.failure(error))
+            return
+          }
+          let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+          guard (200..<300).contains(status), let data else {
+            let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            completion(
+              .failure(
+                SockudoError.invalidOptions(
+                  "Presence \(action) request failed (\(status)): \(body)"
+                )))
+            return
+          }
+          do {
+            let object = try JSON.decode(data)
+            guard let dictionary = object as? [String: Any] else {
+              completion(
+                .failure(
+                  SockudoError.invalidOptions(
+                    "Presence \(action) endpoint returned invalid JSON"
+                  )))
+              return
+            }
+            completion(.success(dictionary))
+          } catch {
+            completion(.failure(error))
+          }
+        }
+      }.resume()
+    } catch {
+      completion(.failure(error))
+    }
+  }
+
+  private func decodePresenceHistoryPage(
+    payload: [String: Any],
+    channelName: String,
+    originalParams: PresenceHistoryParams
+  ) -> PresenceHistoryPage {
+    let items = ((payload["items"] as? [Any]) ?? []).compactMap { raw -> PresenceHistoryItem? in
+      guard let item = raw as? [String: Any] else { return nil }
+      return PresenceHistoryItem(
+        streamID: item["stream_id"] as? String ?? "",
+        serial: (item["serial"] as? NSNumber)?.int64Value ?? 0,
+        publishedAtMS: (item["published_at_ms"] as? NSNumber)?.int64Value ?? 0,
+        event: item["event"] as? String ?? "",
+        cause: item["cause"] as? String ?? "",
+        userID: item["user_id"] as? String ?? "",
+        connectionID: item["connection_id"] as? String,
+        deadNodeID: item["dead_node_id"] as? String,
+        payloadSizeBytes: (item["payload_size_bytes"] as? NSNumber)?.intValue ?? 0,
+        presenceEvent: item["presence_event"] as? [String: AnyHashable] ?? [:]
+      )
+    }
+
+    return PresenceHistoryPage(
+      items: items,
+      direction: payload["direction"] as? String ?? "oldest_first",
+      limit: (payload["limit"] as? NSNumber)?.intValue ?? 0,
+      hasMore: payload["has_more"] as? Bool ?? false,
+      nextCursor: payload["next_cursor"] as? String,
+      bounds: decodePresenceHistoryBounds(payload["bounds"] as? [String: Any]),
+      continuity: decodePresenceHistoryContinuity(payload["continuity"] as? [String: Any]),
+      fetchNext: { [weak self] cursor, completion in
+        self?.fetchPresenceHistory(
+          channelName: channelName,
+          params: PresenceHistoryParams(
+            direction: originalParams.direction,
+            limit: originalParams.limit,
+            cursor: cursor,
+            startSerial: originalParams.startSerial,
+            endSerial: originalParams.endSerial,
+            startTimeMS: originalParams.startTimeMS,
+            endTimeMS: originalParams.endTimeMS,
+            start: originalParams.start,
+            end: originalParams.end
+          ),
+          completion: completion
+        )
+      }
+    )
+  }
+
+  private func decodePresenceSnapshot(payload: [String: Any]) -> PresenceSnapshot {
+    let members = ((payload["members"] as? [Any]) ?? []).compactMap { raw -> PresenceSnapshotMember? in
+      guard let member = raw as? [String: Any] else { return nil }
+      return PresenceSnapshotMember(
+        userID: member["user_id"] as? String ?? "",
+        lastEvent: member["last_event"] as? String ?? "",
+        lastEventSerial: (member["last_event_serial"] as? NSNumber)?.int64Value ?? 0,
+        lastEventAtMS: (member["last_event_at_ms"] as? NSNumber)?.int64Value ?? 0
+      )
+    }
+
+    return PresenceSnapshot(
+      channel: payload["channel"] as? String ?? "",
+      members: members,
+      memberCount: (payload["member_count"] as? NSNumber)?.intValue ?? 0,
+      eventsReplayed: (payload["events_replayed"] as? NSNumber)?.int64Value ?? 0,
+      snapshotSerial: (payload["snapshot_serial"] as? NSNumber)?.int64Value,
+      snapshotTimeMS: (payload["snapshot_time_ms"] as? NSNumber)?.int64Value,
+      continuity: decodePresenceHistoryContinuity(payload["continuity"] as? [String: Any])
+    )
+  }
+
+  private func decodePresenceHistoryBounds(_ payload: [String: Any]?) -> PresenceHistoryBounds {
+    PresenceHistoryBounds(
+      startSerial: (payload?["start_serial"] as? NSNumber)?.int64Value,
+      endSerial: (payload?["end_serial"] as? NSNumber)?.int64Value,
+      startTimeMS: (payload?["start_time_ms"] as? NSNumber)?.int64Value,
+      endTimeMS: (payload?["end_time_ms"] as? NSNumber)?.int64Value
+    )
+  }
+
+  private func decodePresenceHistoryContinuity(_ payload: [String: Any]?) -> PresenceHistoryContinuity {
+    PresenceHistoryContinuity(
+      streamID: payload?["stream_id"] as? String,
+      oldestAvailableSerial: (payload?["oldest_available_serial"] as? NSNumber)?.int64Value,
+      newestAvailableSerial: (payload?["newest_available_serial"] as? NSNumber)?.int64Value,
+      oldestAvailablePublishedAtMS: (payload?["oldest_available_published_at_ms"] as? NSNumber)?.int64Value,
+      newestAvailablePublishedAtMS: (payload?["newest_available_published_at_ms"] as? NSNumber)?.int64Value,
+      retainedEvents: (payload?["retained_events"] as? NSNumber)?.int64Value ?? 0,
+      retainedBytes: (payload?["retained_bytes"] as? NSNumber)?.int64Value ?? 0,
+      degraded: payload?["degraded"] as? Bool ?? false,
+      complete: payload?["complete"] as? Bool ?? false,
+      truncatedByRetention: payload?["truncated_by_retention"] as? Bool ?? false
+    )
   }
 }
 

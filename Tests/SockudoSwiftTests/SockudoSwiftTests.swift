@@ -121,6 +121,86 @@ func deltaSettingsSerializeAsExpected() {
 }
 
 @Test
+func presenceHistoryParamsNormalizeAblyAliases() {
+  let payload = PresenceHistoryParams(
+    direction: "newest_first",
+    limit: 50,
+    start: 1000,
+    end: 2000
+  ).payload
+
+  #expect(payload["direction"] as? String == "newest_first")
+  #expect(payload["limit"] as? Int == 50)
+  #expect(payload["start_time_ms"] as? Int64 == 1000)
+  #expect(payload["end_time_ms"] as? Int64 == 2000)
+}
+
+@Test
+func presenceHistoryPageNextUsesNextCursor() async throws {
+  let cursor = Box<String>()
+  let page = PresenceHistoryPage(
+    items: [],
+    direction: "newest_first",
+    limit: 50,
+    hasMore: true,
+    nextCursor: "cursor-2",
+    bounds: .init(startSerial: nil, endSerial: nil, startTimeMS: nil, endTimeMS: nil),
+    continuity: .init(
+      streamID: nil,
+      oldestAvailableSerial: nil,
+      newestAvailableSerial: nil,
+      oldestAvailablePublishedAtMS: nil,
+      newestAvailablePublishedAtMS: nil,
+      retainedEvents: 0,
+      retainedBytes: 0,
+      degraded: false,
+      complete: true,
+      truncatedByRetention: false
+    ),
+    fetchNext: { next, completion in
+      cursor.value = next
+      completion(
+        .success(
+          PresenceHistoryPage(
+            items: [],
+            direction: "newest_first",
+            limit: 50,
+            hasMore: false,
+            nextCursor: nil,
+            bounds: .init(startSerial: nil, endSerial: nil, startTimeMS: nil, endTimeMS: nil),
+            continuity: .init(
+              streamID: nil,
+              oldestAvailableSerial: nil,
+              newestAvailableSerial: nil,
+              oldestAvailablePublishedAtMS: nil,
+              newestAvailablePublishedAtMS: nil,
+              retainedEvents: 0,
+              retainedBytes: 0,
+              degraded: false,
+              complete: true,
+              truncatedByRetention: false
+            ),
+            fetchNext: nil
+          )
+        ))
+    }
+  )
+
+  try await withCheckedThrowingContinuation { continuation in
+    page.next { result in
+      switch result {
+      case .success:
+        continuation.resume()
+      case .failure(let error):
+        continuation.resume(throwing: error)
+      }
+    }
+  }
+
+  #expect(cursor.value == "cursor-2")
+}
+
+@Test
 func websocketURLIncludesV2FormatQuery() throws {
   let client = try SockudoClient(
     "app-key",

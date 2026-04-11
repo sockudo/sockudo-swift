@@ -312,6 +312,20 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
     members.reset()
     super.disconnect()
   }
+
+  public func history(
+    _ params: PresenceHistoryParams = .init(),
+    completion: @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void
+  ) {
+    client.fetchPresenceHistory(channelName: name, params: params, completion: completion)
+  }
+
+  public func snapshot(
+    _ params: PresenceSnapshotParams = .init(),
+    completion: @escaping @Sendable (Result<PresenceSnapshot, Error>) -> Void
+  ) {
+    client.fetchPresenceSnapshot(channelName: name, params: params, completion: completion)
+  }
 }
 
 public final class EncryptedChannel: PrivateChannel, @unchecked Sendable {

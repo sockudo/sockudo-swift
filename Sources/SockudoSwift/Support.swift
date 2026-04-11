@@ -8,6 +8,182 @@ public struct EventMetadata: Sendable, Equatable {
   }
 }
 
+public struct PresenceHistoryParams: Sendable, Equatable {
+  public let direction: String?
+  public let limit: Int?
+  public let cursor: String?
+  public let startSerial: Int64?
+  public let endSerial: Int64?
+  public let startTimeMS: Int64?
+  public let endTimeMS: Int64?
+  public let start: Int64?
+  public let end: Int64?
+
+  public init(
+    direction: String? = nil,
+    limit: Int? = nil,
+    cursor: String? = nil,
+    startSerial: Int64? = nil,
+    endSerial: Int64? = nil,
+    startTimeMS: Int64? = nil,
+    endTimeMS: Int64? = nil,
+    start: Int64? = nil,
+    end: Int64? = nil
+  ) {
+    self.direction = direction
+    self.limit = limit
+    self.cursor = cursor
+    self.startSerial = startSerial
+    self.endSerial = endSerial
+    self.startTimeMS = startTimeMS
+    self.endTimeMS = endTimeMS
+    self.start = start
+    self.end = end
+  }
+
+  var payload: [String: Any] {
+    var data: [String: Any] = [:]
+    if let direction { data["direction"] = direction }
+    if let limit { data["limit"] = limit }
+    if let cursor { data["cursor"] = cursor }
+    if let startSerial { data["start_serial"] = startSerial }
+    if let endSerial { data["end_serial"] = endSerial }
+    if let startTimeMS {
+      data["start_time_ms"] = startTimeMS
+    } else if let start {
+      data["start_time_ms"] = start
+    }
+    if let endTimeMS {
+      data["end_time_ms"] = endTimeMS
+    } else if let end {
+      data["end_time_ms"] = end
+    }
+    return data
+  }
+}
+
+public struct PresenceSnapshotParams: Sendable, Equatable {
+  public let atTimeMS: Int64?
+  public let at: Int64?
+  public let atSerial: Int64?
+
+  public init(
+    atTimeMS: Int64? = nil,
+    at: Int64? = nil,
+    atSerial: Int64? = nil
+  ) {
+    self.atTimeMS = atTimeMS
+    self.at = at
+    self.atSerial = atSerial
+  }
+
+  var payload: [String: Any] {
+    var data: [String: Any] = [:]
+    if let atTimeMS {
+      data["at_time_ms"] = atTimeMS
+    } else if let at {
+      data["at_time_ms"] = at
+    }
+    if let atSerial { data["at_serial"] = atSerial }
+    return data
+  }
+}
+
+public struct PresenceHistoryItem: @unchecked Sendable, Equatable {
+  public let streamID: String
+  public let serial: Int64
+  public let publishedAtMS: Int64
+  public let event: String
+  public let cause: String
+  public let userID: String
+  public let connectionID: String?
+  public let deadNodeID: String?
+  public let payloadSizeBytes: Int
+  public let presenceEvent: [String: AnyHashable]
+}
+
+public struct PresenceHistoryBounds: Sendable, Equatable {
+  public let startSerial: Int64?
+  public let endSerial: Int64?
+  public let startTimeMS: Int64?
+  public let endTimeMS: Int64?
+}
+
+public struct PresenceHistoryContinuity: Sendable, Equatable {
+  public let streamID: String?
+  public let oldestAvailableSerial: Int64?
+  public let newestAvailableSerial: Int64?
+  public let oldestAvailablePublishedAtMS: Int64?
+  public let newestAvailablePublishedAtMS: Int64?
+  public let retainedEvents: Int64
+  public let retainedBytes: Int64
+  public let degraded: Bool
+  public let complete: Bool
+  public let truncatedByRetention: Bool
+}
+
+public struct PresenceSnapshotMember: Sendable, Equatable {
+  public let userID: String
+  public let lastEvent: String
+  public let lastEventSerial: Int64
+  public let lastEventAtMS: Int64
+}
+
+public struct PresenceSnapshot: Sendable, Equatable {
+  public let channel: String
+  public let members: [PresenceSnapshotMember]
+  public let memberCount: Int
+  public let eventsReplayed: Int64
+  public let snapshotSerial: Int64?
+  public let snapshotTimeMS: Int64?
+  public let continuity: PresenceHistoryContinuity
+}
+
+public final class PresenceHistoryPage: @unchecked Sendable {
+  public let items: [PresenceHistoryItem]
+  public let direction: String
+  public let limit: Int
+  public let hasMore: Bool
+  public let nextCursor: String?
+  public let bounds: PresenceHistoryBounds
+  public let continuity: PresenceHistoryContinuity
+  private let fetchNext: (@Sendable (String, @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void) -> Void)?
+
+  init(
+    items: [PresenceHistoryItem],
+    direction: String,
+    limit: Int,
+    hasMore: Bool,
+    nextCursor: String?,
+    bounds: PresenceHistoryBounds,
+    continuity: PresenceHistoryContinuity,
+    fetchNext: (@Sendable (String, @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void) -> Void)?
+  ) {
+    self.items = items
+    self.direction = direction
+    self.limit = limit
+    self.hasMore = hasMore
+    self.nextCursor = nextCursor
+    self.bounds = bounds
+    self.continuity = continuity
+    self.fetchNext = fetchNext
+  }
+
+  public func hasNext() -> Bool {
+    hasMore && nextCursor != nil
+  }
+
+  public func next(
+    completion: @escaping @Sendable (Result<PresenceHistoryPage, Error>) -> Void
+  ) {
+    guard hasNext(), let nextCursor, let fetchNext else {
+      completion(.failure(SockudoError.invalidOptions("No more pages available")))
+      return
+    }
+    fetchNext(nextCursor, completion)
+  }
+}
+
 public struct EventBindingToken: Hashable, Sendable {
   fileprivate let id: UUID
 
