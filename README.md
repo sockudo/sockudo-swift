@@ -155,6 +155,60 @@ channel.bind("sockudo:rewind_complete") { data, _ in
 }
 ```
 
+### Mutable Messages (Release 4.3)
+
+Protocol V2 mutable messages use:
+
+- `sockudo:message.update`
+- `sockudo:message.delete`
+- `sockudo:message.append`
+
+Client rule:
+
+- `message.update` replaces local content with the full event payload
+- `message.delete` is the latest visible version and may carry `nil` data
+- `message.append` concatenates onto the current local string state
+
+If you receive `message.append` before you have a string base, fetch the latest visible message first and seed local state before applying more appends.
+
+For historical inspection, use:
+
+- `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}` for the latest visible version
+- `GET /apps/{appId}/channels/{channelName}/messages/{messageSerial}/versions` for preserved versions in `version_serial` order
+
+```swift
+import SockudoSwift
+
+let client = try SockudoClient(
+    "app-key",
+    options: .init(
+        cluster: "local",
+        forceTLS: false,
+        wsHost: "127.0.0.1",
+        wsPort: 6001,
+        protocolVersion: 2
+    )
+)
+
+var state: MutableMessageState? = nil
+
+let channel = client.subscribe("chat:room-1")
+channel.bindGlobal { eventName, data in
+    guard
+        let event = data as? SockudoEvent,
+        isMutableMessageEvent(event)
+    else { return }
+    do {
+        state = try reduceMutableMessageEvent(current: state, event: event)
+        print(state?.messageSerial as Any, state?.action as Any, state?.data as Any)
+    } catch {
+        print("mutable message reduction failed:", error)
+    }
+}
+
+client.connect()
+```
+
 ### Presence History
 
 Client-side presence history is proxy-backed. `SockudoSwift` does not sign the server REST API directly; configure `presenceHistory` with a backend endpoint that accepts `{channel, params, action}` and forwards the request using server credentials.

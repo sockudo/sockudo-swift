@@ -25,6 +25,7 @@ public final class SockudoClient: @unchecked Sendable {
     public var channelAuthorization: ChannelAuthorizationOptions
     public var userAuthentication: UserAuthenticationOptions
     public var presenceHistory: PresenceHistoryOptions?
+    public var versionedMessages: VersionedMessagesOptions?
     public var deltaCompression: DeltaOptions?
     public var messageDeduplication: Bool
     public var messageDeduplicationCapacity: Int
@@ -55,6 +56,7 @@ public final class SockudoClient: @unchecked Sendable {
       channelAuthorization: ChannelAuthorizationOptions = .init(),
       userAuthentication: UserAuthenticationOptions = .init(),
       presenceHistory: PresenceHistoryOptions? = nil,
+      versionedMessages: VersionedMessagesOptions? = nil,
       deltaCompression: DeltaOptions? = nil,
       messageDeduplication: Bool = true,
       messageDeduplicationCapacity: Int = 1000,
@@ -84,6 +86,7 @@ public final class SockudoClient: @unchecked Sendable {
       self.channelAuthorization = channelAuthorization
       self.userAuthentication = userAuthentication
       self.presenceHistory = presenceHistory
+      self.versionedMessages = versionedMessages
       self.deltaCompression = deltaCompression
       self.messageDeduplication = messageDeduplication
       self.messageDeduplicationCapacity = messageDeduplicationCapacity
@@ -949,6 +952,7 @@ extension SockudoClient {
     let channelAuthorizer: ChannelAuthorizationHandler
     let userAuthenticator: UserAuthenticationHandler
     let presenceHistory: PresenceHistoryOptions?
+    let versionedMessages: VersionedMessagesOptions?
     let deltaCompressionEnabled: Bool
     let messageDeduplication: Bool
     let messageDeduplicationCapacity: Int
@@ -986,6 +990,7 @@ extension SockudoClient {
         options.userAuthentication.customHandler
         ?? Self.makeUserAuthenticator(options.userAuthentication)
       presenceHistory = options.presenceHistory
+      versionedMessages = options.versionedMessages
     }
 
     private static func makeChannelAuthorizer(_ options: ChannelAuthorizationOptions)
@@ -1158,12 +1163,114 @@ extension SockudoClient {
     }
   }
 
+  func fetchChannelHistory(
+    channelName: String,
+    params: ChannelHistoryParams,
+    completion: @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void
+  ) {
+    guard let config = self.config.versionedMessages else {
+      completion(
+        .failure(
+          SockudoError.unsupportedFeature(
+            "versionedMessages.endpoint must be configured to use channelHistory(). This endpoint should proxy requests to the Sockudo server REST API."
+          )))
+      return
+    }
+
+    performPresenceHistoryRequest(
+      endpoint: config.endpoint,
+      headers: config.headers.merging(
+        config.headersProvider?() ?? [:], uniquingKeysWith: { _, new in new }),
+      channelName: channelName,
+      params: params.payload,
+      action: "channel_history"
+    ) { [weak self] result in
+      guard let self else { return }
+      completion(
+        result.flatMap { payload in
+          .success(
+            self.decodeChannelHistoryPage(
+              payload: payload,
+              channelName: channelName,
+              originalParams: params))
+        })
+    }
+  }
+
+  func fetchLatestMessage(
+    channelName: String,
+    messageSerial: String,
+    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+  ) {
+    guard let config = self.config.versionedMessages else {
+      completion(
+        .failure(
+          SockudoError.unsupportedFeature(
+            "versionedMessages.endpoint must be configured to use getMessage(). This endpoint should proxy requests to the Sockudo server REST API."
+          )))
+      return
+    }
+
+    performPresenceHistoryRequest(
+      endpoint: config.endpoint,
+      headers: config.headers.merging(
+        config.headersProvider?() ?? [:], uniquingKeysWith: { _, new in new }),
+      channelName: channelName,
+      params: [:],
+      action: "get_message",
+      messageSerial: messageSerial
+    ) { result in
+      completion(
+        result.flatMap { payload in
+          .success(payload["item"] as? [String: Any] ?? [:])
+        })
+    }
+  }
+
+  func fetchMessageVersions(
+    channelName: String,
+    messageSerial: String,
+    params: MessageVersionsParams,
+    completion: @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void
+  ) {
+    guard let config = self.config.versionedMessages else {
+      completion(
+        .failure(
+          SockudoError.unsupportedFeature(
+            "versionedMessages.endpoint must be configured to use getMessageVersions(). This endpoint should proxy requests to the Sockudo server REST API."
+          )))
+      return
+    }
+
+    performPresenceHistoryRequest(
+      endpoint: config.endpoint,
+      headers: config.headers.merging(
+        config.headersProvider?() ?? [:], uniquingKeysWith: { _, new in new }),
+      channelName: channelName,
+      params: params.payload,
+      action: "get_message_versions",
+      messageSerial: messageSerial
+    ) { [weak self] result in
+      guard let self else { return }
+      completion(
+        result.flatMap { payload in
+          .success(
+            self.decodeMessageVersionsPage(
+              payload: payload,
+              channelName: channelName,
+              messageSerial: messageSerial,
+              originalParams: params))
+        })
+    }
+  }
+
   private func performPresenceHistoryRequest(
     endpoint: String,
     headers: [String: String],
     channelName: String,
     params: [String: Any],
     action: String,
+    messageSerial: String? = nil,
     completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
   ) {
     guard let url = URL(string: endpoint, relativeTo: nil) ?? URL(string: endpoint) else {
@@ -1174,11 +1281,15 @@ extension SockudoClient {
     do {
       var request = URLRequest(url: url)
       request.httpMethod = "POST"
-      request.httpBody = try JSON.encodeData([
+      var payload: [String: Any] = [
         "channel": channelName,
         "params": params,
         "action": action,
-      ])
+      ]
+      if let messageSerial {
+        payload["messageSerial"] = messageSerial
+      }
+      request.httpBody = try JSON.encodeData(payload)
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
       for (name, value) in headers {
         request.setValue(value, forHTTPHeaderField: name)
@@ -1289,6 +1400,69 @@ extension SockudoClient {
       snapshotSerial: (payload["snapshot_serial"] as? NSNumber)?.int64Value,
       snapshotTimeMS: (payload["snapshot_time_ms"] as? NSNumber)?.int64Value,
       continuity: decodePresenceHistoryContinuity(payload["continuity"] as? [String: Any])
+    )
+  }
+
+  private func decodeChannelHistoryPage(
+    payload: [String: Any],
+    channelName: String,
+    originalParams: ChannelHistoryParams
+  ) -> ChannelHistoryPage {
+    let items = ((payload["items"] as? [Any]) ?? []).compactMap { $0 as? [String: Any] }
+
+    return ChannelHistoryPage(
+      items: items,
+      direction: payload["direction"] as? String ?? "oldest_first",
+      limit: (payload["limit"] as? NSNumber)?.intValue ?? 0,
+      hasMore: payload["has_more"] as? Bool ?? false,
+      nextCursor: payload["next_cursor"] as? String,
+      bounds: payload["bounds"] as? [String: Any] ?? [:],
+      continuity: payload["continuity"] as? [String: Any] ?? [:],
+      fetchNext: { [weak self] cursor, completion in
+        self?.fetchChannelHistory(
+          channelName: channelName,
+          params: ChannelHistoryParams(
+            direction: originalParams.direction,
+            limit: originalParams.limit,
+            cursor: cursor,
+            startSerial: originalParams.startSerial,
+            endSerial: originalParams.endSerial,
+            startTimeMS: originalParams.startTimeMS,
+            endTimeMS: originalParams.endTimeMS
+          ),
+          completion: completion
+        )
+      }
+    )
+  }
+
+  private func decodeMessageVersionsPage(
+    payload: [String: Any],
+    channelName: String,
+    messageSerial: String,
+    originalParams: MessageVersionsParams
+  ) -> MessageVersionsPage {
+    let items = ((payload["items"] as? [Any]) ?? []).compactMap { $0 as? [String: Any] }
+
+    return MessageVersionsPage(
+      channel: payload["channel"] as? String ?? channelName,
+      items: items,
+      direction: payload["direction"] as? String ?? "oldest_first",
+      limit: (payload["limit"] as? NSNumber)?.intValue ?? 0,
+      hasMore: payload["has_more"] as? Bool ?? false,
+      nextCursor: payload["next_cursor"] as? String,
+      fetchNext: { [weak self] cursor, completion in
+        self?.fetchMessageVersions(
+          channelName: channelName,
+          messageSerial: messageSerial,
+          params: MessageVersionsParams(
+            direction: originalParams.direction,
+            limit: originalParams.limit,
+            cursor: cursor
+          ),
+          completion: completion
+        )
+      }
     )
   }
 

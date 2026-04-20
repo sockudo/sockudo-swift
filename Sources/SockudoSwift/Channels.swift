@@ -320,6 +320,33 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
     client.fetchPresenceHistory(channelName: name, params: params, completion: completion)
   }
 
+  public func channelHistory(
+    _ params: ChannelHistoryParams = .init(),
+    completion: @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void
+  ) {
+    client.fetchChannelHistory(channelName: name, params: params, completion: completion)
+  }
+
+  public func getMessage(
+    _ messageSerial: String,
+    completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
+  ) {
+    client.fetchLatestMessage(channelName: name, messageSerial: messageSerial, completion: completion)
+  }
+
+  public func getMessageVersions(
+    _ messageSerial: String,
+    params: MessageVersionsParams = .init(),
+    completion: @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void
+  ) {
+    client.fetchMessageVersions(
+      channelName: name,
+      messageSerial: messageSerial,
+      params: params,
+      completion: completion
+    )
+  }
+
   public func snapshot(
     _ params: PresenceSnapshotParams = .init(),
     completion: @escaping @Sendable (Result<PresenceSnapshot, Error>) -> Void

@@ -116,3 +116,19 @@ public struct PresenceHistoryOptions {
     self.headersProvider = headersProvider
   }
 }
+
+public struct VersionedMessagesOptions {
+  public var endpoint: String
+  public var headers: [String: String]
+  public var headersProvider: (@Sendable () -> [String: String])?
+
+  public init(
+    endpoint: String,
+    headers: [String: String] = [:],
+    headersProvider: (@Sendable () -> [String: String])? = nil
+  ) {
+    self.endpoint = endpoint
+    self.headers = headers
+    self.headersProvider = headersProvider
+  }
+}

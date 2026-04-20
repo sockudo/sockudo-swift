@@ -139,6 +139,157 @@ public struct PresenceSnapshot: Sendable, Equatable {
   public let continuity: PresenceHistoryContinuity
 }
 
+public struct ChannelHistoryParams: Sendable, Equatable {
+  public let direction: String?
+  public let limit: Int?
+  public let cursor: String?
+  public let startSerial: Int64?
+  public let endSerial: Int64?
+  public let startTimeMS: Int64?
+  public let endTimeMS: Int64?
+
+  public init(
+    direction: String? = nil,
+    limit: Int? = nil,
+    cursor: String? = nil,
+    startSerial: Int64? = nil,
+    endSerial: Int64? = nil,
+    startTimeMS: Int64? = nil,
+    endTimeMS: Int64? = nil
+  ) {
+    self.direction = direction
+    self.limit = limit
+    self.cursor = cursor
+    self.startSerial = startSerial
+    self.endSerial = endSerial
+    self.startTimeMS = startTimeMS
+    self.endTimeMS = endTimeMS
+  }
+
+  var payload: [String: Any] {
+    var data: [String: Any] = [:]
+    if let direction { data["direction"] = direction }
+    if let limit { data["limit"] = limit }
+    if let cursor { data["cursor"] = cursor }
+    if let startSerial { data["start_serial"] = startSerial }
+    if let endSerial { data["end_serial"] = endSerial }
+    if let startTimeMS { data["start_time_ms"] = startTimeMS }
+    if let endTimeMS { data["end_time_ms"] = endTimeMS }
+    return data
+  }
+}
+
+public final class ChannelHistoryPage: @unchecked Sendable {
+  public let items: [[String: Any]]
+  public let direction: String
+  public let limit: Int
+  public let hasMore: Bool
+  public let nextCursor: String?
+  public let bounds: [String: Any]
+  public let continuity: [String: Any]
+  private let fetchNext: (@Sendable (String, @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void) -> Void)?
+
+  init(
+    items: [[String: Any]],
+    direction: String,
+    limit: Int,
+    hasMore: Bool,
+    nextCursor: String?,
+    bounds: [String: Any],
+    continuity: [String: Any],
+    fetchNext: (@Sendable (String, @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void) -> Void)?
+  ) {
+    self.items = items
+    self.direction = direction
+    self.limit = limit
+    self.hasMore = hasMore
+    self.nextCursor = nextCursor
+    self.bounds = bounds
+    self.continuity = continuity
+    self.fetchNext = fetchNext
+  }
+
+  public func hasNext() -> Bool {
+    hasMore && nextCursor != nil
+  }
+
+  public func next(
+    completion: @escaping @Sendable (Result<ChannelHistoryPage, Error>) -> Void
+  ) {
+    guard hasNext(), let nextCursor, let fetchNext else {
+      completion(.failure(SockudoError.invalidOptions("No more pages available")))
+      return
+    }
+    fetchNext(nextCursor, completion)
+  }
+}
+
+public struct MessageVersionsParams: Sendable, Equatable {
+  public let direction: String?
+  public let limit: Int?
+  public let cursor: String?
+
+  public init(
+    direction: String? = nil,
+    limit: Int? = nil,
+    cursor: String? = nil
+  ) {
+    self.direction = direction
+    self.limit = limit
+    self.cursor = cursor
+  }
+
+  var payload: [String: Any] {
+    var data: [String: Any] = [:]
+    if let direction { data["direction"] = direction }
+    if let limit { data["limit"] = limit }
+    if let cursor { data["cursor"] = cursor }
+    return data
+  }
+}
+
+public final class MessageVersionsPage: @unchecked Sendable {
+  public let channel: String
+  public let items: [[String: Any]]
+  public let direction: String
+  public let limit: Int
+  public let hasMore: Bool
+  public let nextCursor: String?
+  private let fetchNext: (@Sendable (String, @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void) -> Void)?
+
+  init(
+    channel: String,
+    items: [[String: Any]],
+    direction: String,
+    limit: Int,
+    hasMore: Bool,
+    nextCursor: String?,
+    fetchNext: (@Sendable (String, @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void) -> Void)?
+  ) {
+    self.channel = channel
+    self.items = items
+    self.direction = direction
+    self.limit = limit
+    self.hasMore = hasMore
+    self.nextCursor = nextCursor
+    self.fetchNext = fetchNext
+  }
+
+  public func hasNext() -> Bool {
+    hasMore && nextCursor != nil
+  }
+
+  public func next(
+    completion: @escaping @Sendable (Result<MessageVersionsPage, Error>) -> Void
+  ) {
+    guard hasNext(), let nextCursor, let fetchNext else {
+      completion(.failure(SockudoError.invalidOptions("No more pages available")))
+      return
+    }
+    fetchNext(nextCursor, completion)
+  }
+}
+
 public final class PresenceHistoryPage: @unchecked Sendable {
   public let items: [PresenceHistoryItem]
   public let direction: String
