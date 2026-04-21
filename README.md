@@ -91,12 +91,6 @@ let v2Client = try SockudoClient(
 )
 ```
 
-Protocol V2 heartbeat behavior:
-
-- Sockudo servers use native WebSocket ping/pong frames for automatic heartbeat traffic
-- the Swift client uses `URLSessionWebSocketTask.sendPing` for native V2 liveness checks
-- lightweight `sockudo:ping` / `sockudo:pong` fallback messages remain reserved for compatibility and diagnostics, and they do not carry `message_id`, `serial`, or `stream_id`
-
 ## Advanced Usage
 
 ### Channel Authorization

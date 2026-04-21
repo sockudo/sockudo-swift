@@ -642,27 +642,6 @@ public final class SockudoClient: @unchecked Sendable {
   }
 
   private func sendPing() {
-    if config.protocolVersion == 2, let task = webSocketTask {
-      invalidateActivityTimer()
-      activityTimer = Timer.scheduledTimer(withTimeInterval: config.pongTimeout, repeats: false) {
-        [weak self] _ in
-        Task { @MainActor in
-          self?.scheduleRetry(after: 0)
-        }
-      }
-      task.sendPing { [weak self] error in
-        Task { @MainActor in
-          guard let self else { return }
-          if error != nil {
-            self.scheduleRetry(after: 0)
-            return
-          }
-          self.resetActivityTimer()
-        }
-      }
-      return
-    }
-
     _ = try? sendEvent(name: p.event("ping"), data: [:], channel: nil)
     invalidateActivityTimer()
     activityTimer = Timer.scheduledTimer(withTimeInterval: config.pongTimeout, repeats: false) {
