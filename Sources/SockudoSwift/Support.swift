@@ -649,17 +649,152 @@ public struct SubscriptionOptions: Sendable, Codable, Equatable {
   public var delta: ChannelDeltaSettings?
   public var events: [String]?
   public var rewind: SubscriptionRewind?
+  public var annotationSubscribe: Bool
 
   public init(
     filter: FilterNode? = nil,
     delta: ChannelDeltaSettings? = nil,
     events: [String]? = nil,
-    rewind: SubscriptionRewind? = nil
+    rewind: SubscriptionRewind? = nil,
+    annotationSubscribe: Bool = false
   ) {
     self.filter = filter
     self.delta = delta
     self.events = events
     self.rewind = rewind
+    self.annotationSubscribe = annotationSubscribe
+  }
+}
+
+public struct PublishAnnotationRequest: Sendable, Equatable {
+  public let type: String
+  public let name: String?
+  public let count: Int?
+  public let data: [String: ExtraValue]?
+  public let clientID: String?
+  public let extras: [String: ExtraValue]?
+  public let idempotencyKey: String?
+
+  public init(
+    type: String,
+    name: String? = nil,
+    count: Int? = nil,
+    data: [String: ExtraValue]? = nil,
+    clientID: String? = nil,
+    extras: [String: ExtraValue]? = nil,
+    idempotencyKey: String? = nil
+  ) {
+    self.type = type
+    self.name = name
+    self.count = count
+    self.data = data
+    self.clientID = clientID
+    self.extras = extras
+    self.idempotencyKey = idempotencyKey
+  }
+
+  var payload: [String: Any] {
+    var data: [String: Any] = ["type": type]
+    if let name { data["name"] = name }
+    if let count { data["count"] = count }
+    if let annotationData = self.data { data["data"] = annotationData.mapValues(\.rawValue) }
+    if let clientID { data["clientId"] = clientID }
+    if let extras { data["extras"] = extras.mapValues(\.rawValue) }
+    if let idempotencyKey { data["idempotencyKey"] = idempotencyKey }
+    return data
+  }
+}
+
+public struct PublishAnnotationResponse: @unchecked Sendable {
+  public let annotation: [String: Any]
+  public let summary: [String: Any]?
+
+  public init(annotation: [String: Any], summary: [String: Any]? = nil) {
+    self.annotation = annotation
+    self.summary = summary
+  }
+}
+
+public struct DeleteAnnotationResponse: @unchecked Sendable {
+  public let deleted: Bool
+  public let annotationSerial: String
+  public let summary: [String: Any]?
+
+  public init(deleted: Bool, annotationSerial: String, summary: [String: Any]? = nil) {
+    self.deleted = deleted
+    self.annotationSerial = annotationSerial
+    self.summary = summary
+  }
+}
+
+public struct AnnotationEventsParams: Sendable, Equatable {
+  public let direction: String?
+  public let limit: Int?
+  public let cursor: String?
+  public let type: String?
+  public let fromSerial: String?
+
+  public init(
+    direction: String? = nil,
+    limit: Int? = nil,
+    cursor: String? = nil,
+    type: String? = nil,
+    fromSerial: String? = nil
+  ) {
+    self.direction = direction
+    self.limit = limit
+    self.cursor = cursor
+    self.type = type
+    self.fromSerial = fromSerial
+  }
+
+  var payload: [String: Any] {
+    var data: [String: Any] = [:]
+    if let direction { data["direction"] = direction }
+    if let limit { data["limit"] = limit }
+    if let cursor { data["cursor"] = cursor }
+    if let type { data["type"] = type }
+    if let fromSerial { data["from_serial"] = fromSerial }
+    return data
+  }
+}
+
+public final class AnnotationEventsPage: @unchecked Sendable {
+  public let items: [[String: Any]]
+  public let direction: String
+  public let limit: Int
+  public let hasMore: Bool
+  public let nextCursor: String?
+  private let fetchNext: (@Sendable (String, @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void) -> Void)?
+
+  init(
+    items: [[String: Any]],
+    direction: String,
+    limit: Int,
+    hasMore: Bool,
+    nextCursor: String?,
+    fetchNext: (@Sendable (String, @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void) -> Void)?
+  ) {
+    self.items = items
+    self.direction = direction
+    self.limit = limit
+    self.hasMore = hasMore
+    self.nextCursor = nextCursor
+    self.fetchNext = fetchNext
+  }
+
+  public func hasNext() -> Bool {
+    hasMore && nextCursor != nil
+  }
+
+  public func next(
+    completion: @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void
+  ) {
+    guard hasNext(), let nextCursor, let fetchNext else {
+      completion(.failure(SockudoError.invalidOptions("No more pages available")))
+      return
+    }
+    fetchNext(nextCursor, completion)
   }
 }
 

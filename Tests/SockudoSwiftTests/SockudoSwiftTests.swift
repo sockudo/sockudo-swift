@@ -273,6 +273,106 @@ func presenceHistoryPageNextUsesNextCursor() async throws {
 }
 
 @Test
+func annotationRequestPayloadUsesProxyShape() {
+  let payload = PublishAnnotationRequest(
+    type: "reactions:distinct.v1",
+    name: "like",
+    count: 2,
+    data: ["emoji": .string("thumbs-up")],
+    clientID: "client-1",
+    extras: ["source": .string("ios")],
+    idempotencyKey: "anno-1"
+  ).payload
+
+  #expect(payload["type"] as? String == "reactions:distinct.v1")
+  #expect(payload["name"] as? String == "like")
+  #expect(payload["count"] as? Int == 2)
+  #expect((payload["data"] as? [String: Any])?["emoji"] as? String == "thumbs-up")
+  #expect(payload["clientId"] as? String == "client-1")
+  #expect((payload["extras"] as? [String: Any])?["source"] as? String == "ios")
+  #expect(payload["idempotencyKey"] as? String == "anno-1")
+}
+
+@Test
+func annotationEventsPageNextUsesNextCursor() {
+  let cursor = Box<String>()
+  let page = AnnotationEventsPage(
+    items: [],
+    direction: "oldest_first",
+    limit: 10,
+    hasMore: true,
+    nextCursor: "anno-cursor-2",
+    fetchNext: { next, completion in
+      cursor.value = next
+      completion(
+        .success(
+          AnnotationEventsPage(
+            items: [],
+            direction: "oldest_first",
+            limit: 10,
+            hasMore: false,
+            nextCursor: nil,
+            fetchNext: nil
+          )
+        ))
+    }
+  )
+
+  page.next { _ in }
+  #expect(cursor.value == "anno-cursor-2")
+}
+
+@Test
+func channelExposesAnnotationInternalEvents() throws {
+  let client = try SockudoClient(
+    "app-key",
+    options: .init(cluster: "local", protocolVersion: 2)
+  )
+  let channel = client.subscribe("chat")
+  let summary = Box<[String: Any]>()
+  let raw = Box<[String: Any]>()
+
+  _ = channel.bind("message.summary") { data, _ in
+    summary.value = data as? [String: Any]
+  }
+  _ = channel.bind("annotation.create") { data, _ in
+    raw.value = data as? [String: Any]
+  }
+
+  channel.handle(
+    event: SockudoEvent(
+      event: "sockudo_internal:message",
+      channel: "chat",
+      data: ["action": "message.summary", "messageSerial": "msg-1"],
+      userID: nil,
+      streamID: nil,
+      messageId: nil,
+      rawMessage: "",
+      sequence: nil,
+      conflationKey: nil,
+      serial: nil,
+      extras: nil
+    ))
+  channel.handle(
+    event: SockudoEvent(
+      event: "sockudo_internal:annotation",
+      channel: "chat",
+      data: ["action": "annotation.create", "messageSerial": "msg-1"],
+      userID: nil,
+      streamID: nil,
+      messageId: nil,
+      rawMessage: "",
+      sequence: nil,
+      conflationKey: nil,
+      serial: nil,
+      extras: nil
+    ))
+
+  #expect(summary.value?["messageSerial"] as? String == "msg-1")
+  #expect(raw.value?["action"] as? String == "annotation.create")
+}
+
+@Test
 func websocketURLIncludesV2FormatQuery() throws {
   let client = try SockudoClient(
     "app-key",
