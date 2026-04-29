@@ -11,7 +11,9 @@ public class Channel: @unchecked Sendable {
   var subscriptionCount: Int?
   var tagsFilter: FilterNode?
   var deltaSettings: ChannelDeltaSettings?
+  var eventsFilter: [String]?
   var rewind: SubscriptionRewind?
+  var annotationSubscribe = false
 
   init(name: String, client: SockudoClient) {
     self.name = name
@@ -118,8 +120,14 @@ public class Channel: @unchecked Sendable {
         if let deltaSettings = self.deltaSettings {
           payload["delta"] = deltaSettings.subscriptionValue()
         }
+        if let eventsFilter = self.eventsFilter {
+          payload["events"] = eventsFilter
+        }
         if let rewind = self.rewind {
           payload["rewind"] = rewind.subscriptionValue()
+        }
+        if self.annotationSubscribe {
+          payload["modes"] = ["SUBSCRIBE", "ANNOTATION_SUBSCRIBE"]
         }
         do {
           _ = try self.client.sendEvent(
@@ -165,10 +173,61 @@ public class Channel: @unchecked Sendable {
         subscriptionCount = count
       }
       dispatcher.emit(p.event("subscription_count"), data: event.data)
+    } else if event.event == p.internal("message"),
+      let data = event.data as? [String: Any],
+      data["action"] as? String == "message.summary"
+    {
+      dispatcher.emit("message.summary", data: data, metadata: EventMetadata(userID: event.userID))
+    } else if event.event == p.internal("annotation"),
+      let data = event.data as? [String: Any],
+      let action = data["action"] as? String
+    {
+      dispatcher.emit(action, data: data, metadata: EventMetadata(userID: event.userID))
     } else if p.isInternalEvent(event.event) == false {
       dispatcher.emit(
         event.event, data: event.data, metadata: EventMetadata(userID: event.userID))
     }
+  }
+
+  public func publishAnnotation(
+    messageSerial: String,
+    annotation: PublishAnnotationRequest,
+    completion: @escaping @Sendable (Result<PublishAnnotationResponse, Error>) -> Void
+  ) {
+    client.publishAnnotation(
+      channelName: name,
+      messageSerial: messageSerial,
+      annotation: annotation,
+      completion: completion
+    )
+  }
+
+  public func deleteAnnotation(
+    messageSerial: String,
+    annotationSerial: String,
+    socketID: String? = nil,
+    completion: @escaping @Sendable (Result<DeleteAnnotationResponse, Error>) -> Void
+  ) {
+    client.deleteAnnotation(
+      channelName: name,
+      messageSerial: messageSerial,
+      annotationSerial: annotationSerial,
+      socketID: socketID,
+      completion: completion
+    )
+  }
+
+  public func listAnnotations(
+    messageSerial: String,
+    params: AnnotationEventsParams = .init(),
+    completion: @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void
+  ) {
+    client.listAnnotations(
+      channelName: name,
+      messageSerial: messageSerial,
+      params: params,
+      completion: completion
+    )
   }
 }
 
@@ -302,6 +361,16 @@ public final class PresenceChannel: PrivateChannel, @unchecked Sendable {
       if let data = event.data as? [String: Any], let member = members.remove(data) {
         dispatcher.emit(p.event("member_removed"), data: member)
       }
+    } else if event.event == p.internal("message"),
+      let data = event.data as? [String: Any],
+      data["action"] as? String == "message.summary"
+    {
+      dispatcher.emit("message.summary", data: data, metadata: EventMetadata(userID: event.userID))
+    } else if event.event == p.internal("annotation"),
+      let data = event.data as? [String: Any],
+      let action = data["action"] as? String
+    {
+      dispatcher.emit(action, data: data, metadata: EventMetadata(userID: event.userID))
     } else if p.isInternalEvent(event.event) == false {
       dispatcher.emit(
         event.event, data: event.data, metadata: EventMetadata(userID: event.userID))
