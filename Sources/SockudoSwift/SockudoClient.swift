@@ -235,7 +235,9 @@ public final class SockudoClient: @unchecked Sendable {
     if let options {
       channel.tagsFilter = options.filter
       channel.deltaSettings = options.delta
+      channel.eventsFilter = options.events
       channel.rewind = options.rewind
+      channel.annotationSubscribe = options.annotationSubscribe
     }
     channel.subscribeIfPossible()
     return channel
@@ -1285,6 +1287,118 @@ extension SockudoClient {
     }
   }
 
+  func publishAnnotation(
+    channelName: String,
+    messageSerial: String,
+    annotation: PublishAnnotationRequest,
+    completion: @escaping @Sendable (Result<PublishAnnotationResponse, Error>) -> Void
+  ) {
+    guard let config = self.config.versionedMessages else {
+      completion(
+        .failure(
+          SockudoError.unsupportedFeature(
+            "versionedMessages.endpoint must be configured to use publishAnnotation(). This endpoint should proxy requests to the Sockudo server REST API."
+          )))
+      return
+    }
+
+    performPresenceHistoryRequest(
+      endpoint: config.endpoint,
+      headers: config.headers.merging(
+        config.headersProvider?() ?? [:], uniquingKeysWith: { _, new in new }),
+      channelName: channelName,
+      params: [:],
+      action: "publish_annotation",
+      messageSerial: messageSerial,
+      annotation: annotation.payload
+    ) { result in
+      completion(
+        result.flatMap { payload in
+          .success(
+            PublishAnnotationResponse(
+              annotation: payload["annotation"] as? [String: Any] ?? [:],
+              summary: payload["summary"] as? [String: Any]
+            ))
+        })
+    }
+  }
+
+  func deleteAnnotation(
+    channelName: String,
+    messageSerial: String,
+    annotationSerial: String,
+    socketID: String?,
+    completion: @escaping @Sendable (Result<DeleteAnnotationResponse, Error>) -> Void
+  ) {
+    guard let config = self.config.versionedMessages else {
+      completion(
+        .failure(
+          SockudoError.unsupportedFeature(
+            "versionedMessages.endpoint must be configured to use deleteAnnotation(). This endpoint should proxy requests to the Sockudo server REST API."
+          )))
+      return
+    }
+
+    performPresenceHistoryRequest(
+      endpoint: config.endpoint,
+      headers: config.headers.merging(
+        config.headersProvider?() ?? [:], uniquingKeysWith: { _, new in new }),
+      channelName: channelName,
+      params: [:],
+      action: "delete_annotation",
+      messageSerial: messageSerial,
+      annotationSerial: annotationSerial,
+      socketID: socketID
+    ) { result in
+      completion(
+        result.flatMap { payload in
+          .success(
+            DeleteAnnotationResponse(
+              deleted: payload["deleted"] as? Bool ?? false,
+              annotationSerial: payload["annotationSerial"] as? String ?? annotationSerial,
+              summary: payload["summary"] as? [String: Any]
+            ))
+        })
+    }
+  }
+
+  func listAnnotations(
+    channelName: String,
+    messageSerial: String,
+    params: AnnotationEventsParams,
+    completion: @escaping @Sendable (Result<AnnotationEventsPage, Error>) -> Void
+  ) {
+    guard let config = self.config.versionedMessages else {
+      completion(
+        .failure(
+          SockudoError.unsupportedFeature(
+            "versionedMessages.endpoint must be configured to use listAnnotations(). This endpoint should proxy requests to the Sockudo server REST API."
+          )))
+      return
+    }
+
+    performPresenceHistoryRequest(
+      endpoint: config.endpoint,
+      headers: config.headers.merging(
+        config.headersProvider?() ?? [:], uniquingKeysWith: { _, new in new }),
+      channelName: channelName,
+      params: params.payload,
+      action: "list_annotations",
+      messageSerial: messageSerial
+    ) { [weak self] result in
+      guard let self else { return }
+      completion(
+        result.flatMap { payload in
+          .success(
+            self.decodeAnnotationEventsPage(
+              payload: payload,
+              channelName: channelName,
+              messageSerial: messageSerial,
+              originalParams: params))
+        })
+    }
+  }
+
   private func performPresenceHistoryRequest(
     endpoint: String,
     headers: [String: String],
@@ -1292,6 +1406,9 @@ extension SockudoClient {
     params: [String: Any],
     action: String,
     messageSerial: String? = nil,
+    annotationSerial: String? = nil,
+    socketID: String? = nil,
+    annotation: [String: Any]? = nil,
     completion: @escaping @Sendable (Result<[String: Any], Error>) -> Void
   ) {
     guard let url = URL(string: endpoint, relativeTo: nil) ?? URL(string: endpoint) else {
@@ -1309,6 +1426,15 @@ extension SockudoClient {
       ]
       if let messageSerial {
         payload["messageSerial"] = messageSerial
+      }
+      if let annotationSerial {
+        payload["annotationSerial"] = annotationSerial
+      }
+      if let socketID {
+        payload["socketId"] = socketID
+      }
+      if let annotation {
+        payload["annotation"] = annotation
       }
       request.httpBody = try JSON.encodeData(payload)
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -1480,6 +1606,37 @@ extension SockudoClient {
             direction: originalParams.direction,
             limit: originalParams.limit,
             cursor: cursor
+          ),
+          completion: completion
+        )
+      }
+    )
+  }
+
+  private func decodeAnnotationEventsPage(
+    payload: [String: Any],
+    channelName: String,
+    messageSerial: String,
+    originalParams: AnnotationEventsParams
+  ) -> AnnotationEventsPage {
+    let items = ((payload["items"] as? [Any]) ?? []).compactMap { $0 as? [String: Any] }
+
+    return AnnotationEventsPage(
+      items: items,
+      direction: payload["direction"] as? String ?? "oldest_first",
+      limit: (payload["limit"] as? NSNumber)?.intValue ?? 0,
+      hasMore: payload["has_more"] as? Bool ?? false,
+      nextCursor: payload["next_cursor"] as? String,
+      fetchNext: { [weak self] cursor, completion in
+        self?.listAnnotations(
+          channelName: channelName,
+          messageSerial: messageSerial,
+          params: AnnotationEventsParams(
+            direction: originalParams.direction,
+            limit: originalParams.limit,
+            cursor: cursor,
+            type: originalParams.type,
+            fromSerial: originalParams.fromSerial
           ),
           completion: completion
         )
