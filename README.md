@@ -28,23 +28,19 @@ Official Swift client for Sockudo.
 
 ## Installation
 
-For local monorepo development, use a Swift Package Manager path:
+Use Swift Package Manager with the monorepo package URL:
 
 ```swift
-.package(path: "../sockudo/client-sdks/sockudo-swift")
+.package(url: "https://github.com/sockudo/sockudo", from: "1.0.0")
 ```
 
-Public SwiftPM distribution requires the package repository or subtree split described in
-`docs/sdk-publishing-2026.md`, because SwiftPM expects `Package.swift` at the package repository
-root.
-
-Then depend on `SockudoSwift`:
+Then depend on the `SockudoSwift` product:
 
 ```swift
 .target(
     name: "YourApp",
     dependencies: [
-        .product(name: "SockudoSwift", package: "sockudo-swift"),
+        .product(name: "SockudoSwift", package: "sockudo"),
     ]
 )
 ```
@@ -52,7 +48,7 @@ Then depend on `SockudoSwift`:
 For local development:
 
 ```swift
-.package(path: "../sockudo-swift")
+.package(path: "../sockudo")
 ```
 
 ## Quick Start
@@ -314,9 +310,8 @@ The live suite covers:
 Swift packages are distributed by git tag rather than a central package registry by default.
 
 - CI: root workflow `.github/workflows/sdk-ci.yml`
-- Release gate: root workflow `.github/workflows/sdk-release.yml` with tag `client-swift-vX.Y.Z`
-- Distribution: SwiftPM still requires a package repository or subtree split whose root contains
-  `Package.swift`
+- Release gate: root workflow `.github/workflows/sdk-release.yml` with root tag `vX.Y.Z`
+- Distribution: root `Package.swift` from `https://github.com/sockudo/sockudo`
 
 ## Status
 
