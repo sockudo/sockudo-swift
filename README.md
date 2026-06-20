@@ -31,7 +31,7 @@ Official Swift client for Sockudo.
 Use Swift Package Manager with the monorepo package URL:
 
 ```swift
-.package(url: "https://github.com/sockudo/sockudo", from: "1.0.0")
+.package(url: "https://github.com/sockudo/sockudo", from: "2.0.0")
 ```
 
 Then depend on the `SockudoSwift` product:
