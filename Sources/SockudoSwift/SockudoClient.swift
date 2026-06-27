@@ -143,6 +143,7 @@ public final class SockudoClient: @unchecked Sendable {
   private var currentTransport: Transport?
   private var attemptedFallback = false
   private var manuallyDisconnected = false
+  private var terminalEventHandled = false
   private var tokenRequestInFlight = false
 
   public init(_ key: String, options: Options, urlSession: URLSession? = nil) throws {
@@ -335,6 +336,7 @@ public final class SockudoClient: @unchecked Sendable {
       return
     }
     manuallyDisconnected = false
+    terminalEventHandled = false
     attemptedFallback = false
     updateState(.connecting)
     openWebSocketAfterInitialAuth(using: transports[0])
@@ -344,6 +346,7 @@ public final class SockudoClient: @unchecked Sendable {
 
   public func disconnect() {
     manuallyDisconnected = true
+    terminalEventHandled = true
     invalidateTimers()
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
     webSocketTask = nil
@@ -467,7 +470,9 @@ public final class SockudoClient: @unchecked Sendable {
         self?.readNextMessage()
       }
       webSocketDelegate.didClose = { [weak self] code, reason in
-        self?.handleSocketClosed(code: code, reason: reason)
+        Task { @MainActor in
+          self?.handleSocketClosed(code: code, reason: reason)
+        }
       }
       webSocketTask = task
       task.resume()
@@ -751,6 +756,8 @@ public final class SockudoClient: @unchecked Sendable {
   }
 
   private func handleSocketClosed(code: URLSessionWebSocketTask.CloseCode, reason: String?) {
+    guard !terminalEventHandled else { return }
+    terminalEventHandled = true
     invalidateActivityTimer()
     clearUnavailableTimer()
     webSocketTask = nil
@@ -909,6 +916,7 @@ public final class SockudoClient: @unchecked Sendable {
       [weak self] _ in
       Task { @MainActor in
         guard let self else { return }
+        self.terminalEventHandled = false
         self.webSocketTask?.cancel(with: .goingAway, reason: nil)
         self.webSocketTask = nil
         self.updateState(.connecting)
