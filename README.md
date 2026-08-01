@@ -442,12 +442,12 @@ dispatch is needed — it already runs off-main.
 
 ### Reconnection
 
-On disconnect, the client reconnects automatically using exponential backoff:
+On disconnect, the client reconnects automatically using quadratic backoff:
 
-- Delay formula: `attempt² seconds` (1s, 4s, 9s, 16s, 25s, ...)
+- Delay formula: `attempt² seconds` (0s, 1s, 4s, 9s, 16s, ...)
 - Maximum delay: 120 seconds (configurable via `Options.maxReconnectGapInSeconds`)
 - Maximum attempts: 6 (configurable via `Options.maxReconnectAttempts`, `nil` = unlimited)
-- Counter resets on successful connection
+- Counter resets on a successful connection and on explicit `connect()` or `disconnect()` calls
 
 ```swift
 let client = try SockudoClient(
