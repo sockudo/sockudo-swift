@@ -901,6 +901,49 @@ func capabilityTokenAuthEventsUpdateStateAndProviderRefreshes() async throws {
 }
 
 @Test @SockudoActor
+func capabilityTokenAuthRequiresProtocolV2() throws {
+  do {
+    _ = try SockudoClient(
+      "app-key",
+      options: .init(
+        cluster: "local",
+        protocolVersion: 7,
+        capabilityToken: .init(token: "capability-token")
+      )
+    )
+    Issue.record("Expected capability-token protocol validation to fail")
+  } catch SockudoError.invalidOptions(let message) {
+    #expect(message.contains("protocolVersion 2"))
+  }
+}
+
+@Test @SockudoActor
+func revokedCapabilityTokenDoesNotAttemptInPlaceRefresh() async throws {
+  let tokenRequests = Box<Int>()
+  tokenRequests.value = 0
+  let client = try SockudoClient(
+    "app-key",
+    options: .init(
+      cluster: "local",
+      protocolVersion: 2,
+      capabilityToken: .init(provider: { completion in
+        tokenRequests.value = (tokenRequests.value ?? 0) + 1
+        completion(.success("unexpected-refresh"))
+      })
+    )
+  )
+
+  client.handle(
+    rawMessage: .string(
+      #"{"event":"sockudo:token_expired","data":{"code":40160,"reason":"revoked"}}"#
+    ))
+  try await Task.sleep(for: .milliseconds(50))
+
+  #expect(tokenRequests.value == 0)
+  #expect(client.lastCapabilityTokenExpired == .init(code: 40160, reason: "revoked"))
+}
+
+@Test @SockudoActor
 func capabilityTokenRefreshDelayUsesJWTIatAndExp() throws {
   let token = try unsignedJWT(claims: ["iat": 1_000, "exp": 2_000])
   let delay = try #require(

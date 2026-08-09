@@ -104,7 +104,7 @@ MessagePack and Protobuf preserve `Data` message payloads as native binary. The
 MessagePack representation uses the additive `["binary", <bin>]` tagged value;
 existing string and JSON variants are unchanged.
 
-Protocol V2 capability tokens can be supplied statically or through a provider. The initial token is sent as the WebSocket `token` query parameter. Provider-backed JWTs with `exp` are refreshed proactively at 80% of their lifetime (`iat` to `exp`, or current time to `exp` when `iat` is absent). Opaque tokens and static-only tokens are reactive only: when Sockudo emits `sockudo:token_expired` with code `40142` or `40160`, the provider is called if one exists and the SDK sends a `sockudo:auth` refresh frame with the new token.
+Protocol V2 capability tokens can be supplied statically or through a provider. The initial token is sent as the WebSocket `token` query parameter. Provider-backed JWTs with `exp` are refreshed proactively at 80% of their lifetime (`iat` to `exp`, or current time to `exp` when `iat` is absent). Providers are also called before reconnects. On `sockudo:token_expired`, only code `40142` triggers an in-place `sockudo:auth` refresh; revocation code `40160` is surfaced without retry. Static tokens are never reactively resent. Configuring capability-token auth outside Protocol V2 throws `SockudoError.invalidOptions`.
 
 ```swift
 let client = try SockudoClient(

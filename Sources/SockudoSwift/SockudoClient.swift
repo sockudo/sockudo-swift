@@ -151,6 +151,7 @@ import Network
   private var manuallyDisconnected = false
   private var terminalEventHandled = false
   private var tokenRequestInFlight = false
+  private var initialCapabilityTokenUsed = false
   var reconnectAttempts = 0
   private var cachedDeltaStats: DeltaStats?
 
@@ -158,6 +159,11 @@ import Network
     guard key.isEmpty == false else { throw SockudoError.invalidAppKey }
     guard options.cluster.isEmpty == false else {
       throw SockudoError.invalidOptions("Options must provide a cluster")
+    }
+    guard options.protocolVersion == 2 || options.capabilityToken == nil else {
+      throw SockudoError.invalidOptions(
+        "Capability-token authentication requires protocolVersion 2"
+      )
     }
     guard Self.isAllowedAppendRollupWindow(options.appendRollupWindow) else {
       throw SockudoError.invalidOptions(
@@ -380,16 +386,24 @@ import Network
   }
 
   private func openWebSocketAfterInitialAuth(using transport: Transport) {
-    guard config.protocolVersion == 2,
-      config.capabilityToken == nil,
-      config.capabilityTokenProvider != nil
-    else {
-      if config.protocolVersion == 2, let token = config.capabilityToken {
-        scheduleCapabilityTokenRefreshIfNeeded(for: token)
-      }
+    guard config.protocolVersion == 2 else {
       openWebSocket(using: transport)
       return
     }
+    if initialCapabilityTokenUsed == false, let token = config.capabilityToken,
+      token.isEmpty == false
+    {
+      initialCapabilityTokenUsed = true
+      scheduleCapabilityTokenRefreshIfNeeded(for: token)
+      openWebSocket(using: transport)
+      return
+    }
+    guard config.capabilityTokenProvider != nil else {
+      openWebSocket(using: transport)
+      return
+    }
+
+    initialCapabilityTokenUsed = true
 
     requestCapabilityToken { [weak self] result in
       Task { @SockudoActor in
@@ -645,7 +659,7 @@ import Network
           let expired = Self.decodeCapabilityTokenExpiredData(event.data)
           lastCapabilityTokenExpired = expired
           dispatcher.emit(eventName, data: event.data)
-          if expired.code == 40142 || expired.code == 40160 {
+          if expired.code == 40142 {
             refreshCapabilityToken()
           }
         } else if eventName == p.internal("watchlist_events") {
@@ -913,10 +927,10 @@ import Network
         transports.contains(.wss)
       {
         self.attemptedFallback = true
-        self.openWebSocket(using: .wss)
+        self.openWebSocketAfterInitialAuth(using: .wss)
       } else {
         self.attemptedFallback = false
-        self.openWebSocket(using: transports.first ?? .wss)
+        self.openWebSocketAfterInitialAuth(using: transports.first ?? .wss)
       }
       self.setUnavailableTimer()
     }
