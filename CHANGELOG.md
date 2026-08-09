@@ -5,7 +5,9 @@
 - Added Protocol V2 capability-token options, initial WebSocket `token` query support, typed
   `sockudo:auth_success` / `sockudo:token_expired` state, and provider-backed `sockudo:auth`
   refresh attempts. Provider-backed JWTs with `exp` now schedule proactive refresh at 80% of token
-  lifetime; opaque tokens and static-only tokens remain reactive only.
+  lifetime; opaque provider tokens refresh reactively and static-only tokens are not scheduled.
+- Providers are now called before reconnects; V1 token configuration is rejected, and revoked or
+  static tokens are not resent.
 - Added Protocol V2 `append_rollup_window` validation/query support for the locked server windows
   `0`, `20`, `40`, `100`, and `500`.
 - Added presence channel `update(data:)`, `sockudo_internal:presence_update` member updates, and
