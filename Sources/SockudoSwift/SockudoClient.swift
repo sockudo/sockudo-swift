@@ -834,7 +834,7 @@ import Network
     var queryItems: [URLQueryItem] = [
       .init(name: "protocol", value: "\(p.version)"),
       .init(name: "client", value: "swift"),
-      .init(name: "version", value: "2.1.0"),
+      .init(name: "version", value: "3.0.0"),
       .init(name: "flash", value: "false"),
     ]
     if config.protocolVersion == 2 {

@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.0.0 - 2026-08-17
+
+### Breaking changes
+
+- Replaced `MainActor` isolation on client coordination APIs and callbacks with the dedicated
+  `SockudoActor`. Callers outside that actor continue to use `await`, while callback code can
+  synchronously access other `SockudoActor` state.
+
+### Changed
+
+- Replaced run-loop timers with cancellable actor-isolated tasks and guarded logger/delegate state
+  used across executors.
+- Corrected Protocol V2 capability-token refresh, expiration, revocation, and reconnect behavior.
+- Removed the explicit swift-testing dependency now that Testing ships with the Swift toolchain.
+
 ## 2.1.0 - 2026-06-27
 
 - Added Protocol V2 capability-token options, initial WebSocket `token` query support, typed
