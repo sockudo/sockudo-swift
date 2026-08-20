@@ -34,7 +34,7 @@ Official Swift client for Sockudo.
 Use Swift Package Manager with the SockudoSwift mirror URL:
 
 ```swift
-.package(url: "https://github.com/sockudo/sockudo-swift", from: "2.1.0")
+.package(url: "https://github.com/sockudo/sockudo-swift", from: "3.0.0")
 ```
 
 Then depend on the `SockudoSwift` product:
